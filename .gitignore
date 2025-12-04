@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# Build outputs
+dist/
+build/
+release/
+*.exe
+*.dmg
+*.app
+*.AppImage
+*.deb
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+backups/
+
+# Logs
+logs/
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# User data (local development)
+exports/
+user-data/
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# API Keys (if stored locally for testing)
+api-keys.json
+secrets.json
+
+# Encryption keys (never commit!)
+*.key
+*.pem

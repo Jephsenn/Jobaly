@@ -1,0 +1,9 @@
+{
+  "name": "com.jobsearch.assistant",
+  "description": "Job Search Assistant Native Messaging Host",
+  "path": "REPLACE_WITH_ABSOLUTE_PATH\\native-host\\index.js",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://EXTENSION_ID_WILL_BE_SET_HERE/"
+  ]
+}
