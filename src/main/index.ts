@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron';
 import path from 'path';
 import mammoth from 'mammoth';
 import { logger } from './utils/logger';
@@ -11,9 +11,11 @@ import { JobMatchService } from './services/JobMatchService';
 import { ResumeTailoring } from './services/ResumeTailoring';
 import { CoverLetterGenerator } from './services/CoverLetterGenerator';
 import { DocumentGenerator } from './services/DocumentGenerator';
+import { AutoUpdaterService } from './services/AutoUpdater';
 import type { Job } from '@shared/types';
 
 let mainWindow: BrowserWindow | null = null;
+let autoUpdaterService: AutoUpdaterService | null = null;
 const jobDetector = getJobDetector();
 const jobParser = getJobParser();
 const nativeMessaging = getNativeMessagingServer();
@@ -32,7 +34,7 @@ async function createWindow() {
   // Load the app
   if (process.env.NODE_ENV === 'development') {
     mainWindow.loadURL('http://localhost:3000');
-    mainWindow.webContents.openDevTools();
+    // mainWindow.webContents.openDevTools(); // Commented out - open manually with F12 if needed
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }
@@ -42,6 +44,71 @@ async function createWindow() {
   });
 
   logger.info('Main window created');
+}
+
+function createApplicationMenu() {
+  const template: any[] = [
+    {
+      label: 'File',
+      submenu: [
+        { role: 'quit' }
+      ]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Check for Updates',
+          click: () => {
+            if (autoUpdaterService) {
+              autoUpdaterService.manualCheckForUpdates();
+            }
+          }
+        },
+        {
+          label: 'About',
+          click: () => {
+            if (mainWindow) {
+              dialog.showMessageBox(mainWindow, {
+                type: 'info',
+                title: 'About JobTracker',
+                message: 'JobTracker',
+                detail: `Version: ${app.getVersion()}\n\nA job application tracker with auto-detection.`
+              });
+            }
+          }
+        }
+      ]
+    }
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+  Menu.setApplicationMenu(menu);
 }
 
 app.whenReady().then(async () => {
@@ -56,6 +123,15 @@ app.whenReady().then(async () => {
   }
 
   await createWindow();
+
+  // Initialize auto-updater
+  if (mainWindow) {
+    autoUpdaterService = new AutoUpdaterService(mainWindow);
+    autoUpdaterService.setupListeners();
+  }
+
+  // Create application menu with Check for Updates option
+  createApplicationMenu();
 
   // Start job detection
   startJobDetection();
@@ -234,18 +310,33 @@ function startJobDetection() {
       
       // sql.js uses exec() - column names must match schema (job_url, company_name, etc.)
       // Use NULL for missing data instead of placeholder strings
+      // Helper to escape SQL strings
+      const escapeSQL = (val: any) => val ? `'${String(val).replace(/'/g, "''")}'` : 'NULL';
+      
       db.exec(`
         INSERT INTO jobs (
-          job_url, platform, platform_job_id, title, company_name, location, 
-          description, detected_at, is_saved, is_archived
+          job_url, platform, platform_job_id, title, company_name, location, location_type,
+          salary_min, salary_max, salary_currency, salary_period,
+          description, required_skills, preferred_skills, required_experience_years, 
+          education_level, benefits, detected_at, is_saved, is_archived
         ) VALUES (
-          '${(jobData.url || detectedJob.url).replace(/'/g, "''")}',
-          '${(jobData.platform || detectedJob.platform).replace(/'/g, "''")}',
-          ${jobData.externalId ? `'${jobData.externalId.replace(/'/g, "''")}'` : 'NULL'},
-          ${jobData.title ? `'${jobData.title.replace(/'/g, "''")}'` : 'NULL'},
-          ${jobData.company ? `'${jobData.company.replace(/'/g, "''")}'` : 'NULL'},
-          ${jobData.location ? `'${jobData.location.replace(/'/g, "''")}'` : 'NULL'},
-          ${jobData.description ? `'${jobData.description.replace(/'/g, "''")}'` : 'NULL'},
+          ${escapeSQL(jobData.url || detectedJob.url)},
+          ${escapeSQL(jobData.platform || detectedJob.platform)},
+          ${escapeSQL(jobData.externalId)},
+          ${escapeSQL(jobData.title)},
+          ${escapeSQL(jobData.company)},
+          ${escapeSQL(jobData.location)},
+          ${escapeSQL(jobData.locationType)},
+          ${jobData.salaryMin || 'NULL'},
+          ${jobData.salaryMax || 'NULL'},
+          ${escapeSQL(jobData.salaryCurrency)},
+          ${escapeSQL(jobData.salaryPeriod)},
+          ${escapeSQL(jobData.description)},
+          ${escapeSQL(jobData.requiredSkills?.join(', '))},
+          ${escapeSQL(jobData.preferredSkills?.join(', '))},
+          ${jobData.requiredExperienceYears || 'NULL'},
+          ${escapeSQL(jobData.educationLevel)},
+          ${escapeSQL(jobData.benefits?.join(', '))},
           '${new Date().toISOString()}',
           0,
           0
@@ -288,20 +379,35 @@ function startJobDetection() {
     try {
       const db = DatabaseService.getDatabase();
       
-      // Save job to database (salary is stored as text in description if provided)
+      // Helper to escape SQL strings
+      const escapeSQL = (val: any) => val ? `'${String(val).replace(/'/g, "''")}'` : 'NULL';
+      
+      // Save job to database with all enhanced fields from extension
       db.exec(`
         INSERT INTO jobs (
-          job_url, platform, platform_job_id, title, company_name, location, 
-          description, detected_at, is_saved, is_archived
+          job_url, platform, platform_job_id, title, company_name, location, location_type,
+          salary_min, salary_max, salary_currency, salary_period,
+          description, required_skills, preferred_skills, required_experience_years, 
+          education_level, benefits, detected_at, is_saved, is_archived
         ) VALUES (
-          '${extensionJob.url.replace(/'/g, "''")}',
-          '${extensionJob.platform.replace(/'/g, "''")}',
-          '${extensionJob.id.replace(/'/g, "''")}',
-          ${extensionJob.title ? `'${extensionJob.title.replace(/'/g, "''")}'` : 'NULL'},
-          ${extensionJob.company ? `'${extensionJob.company.replace(/'/g, "''")}'` : 'NULL'},
-          ${extensionJob.location ? `'${extensionJob.location.replace(/'/g, "''")}'` : 'NULL'},
-          ${extensionJob.description ? `'${extensionJob.description.replace(/'/g, "''")}'` : 'NULL'},
-          '${extensionJob.detectedAt}',
+          ${escapeSQL(extensionJob.url)},
+          ${escapeSQL(extensionJob.platform)},
+          ${escapeSQL(extensionJob.id)},
+          ${escapeSQL(extensionJob.title)},
+          ${escapeSQL(extensionJob.company)},
+          ${escapeSQL(extensionJob.location)},
+          ${escapeSQL(extensionJob.locationType)},
+          ${extensionJob.salaryMin || 'NULL'},
+          ${extensionJob.salaryMax || 'NULL'},
+          ${escapeSQL(extensionJob.salaryCurrency || 'USD')},
+          ${escapeSQL(extensionJob.salaryPeriod)},
+          ${escapeSQL(extensionJob.description)},
+          ${escapeSQL(extensionJob.skills?.join(', '))},
+          ${escapeSQL(extensionJob.preferredSkills?.join(', '))},
+          ${extensionJob.experienceYears || 'NULL'},
+          ${escapeSQL(extensionJob.educationLevel)},
+          ${escapeSQL(extensionJob.benefits?.join(', '))},
+          ${escapeSQL(extensionJob.detectedAt || new Date().toISOString())},
           0,
           0
         )
@@ -312,7 +418,16 @@ function startJobDetection() {
       const result = db.exec('SELECT last_insert_rowid() as id');
       const jobId = result[0]?.values[0]?.[0] as number;
       
-      logger.info('Extension job saved to database', { jobId, platform: extensionJob.platform });
+      logger.info('Extension job saved to database', { 
+        jobId, 
+        platform: extensionJob.platform,
+        fieldsExtracted: {
+          salary: extensionJob.salaryMin || extensionJob.salaryMax ? 'yes' : 'no',
+          locationType: extensionJob.locationType || 'none',
+          skills: extensionJob.skills?.length || 0,
+          benefits: extensionJob.benefits?.length || 0
+        }
+      });
       
       // Notify UI
       if (mainWindow) {
@@ -367,7 +482,7 @@ function setupIpcHandlers() {
   ipcMain.handle('get-job', async (_, id: number) => {
     try {
       const db = DatabaseService.getDatabase();
-      const result = db.exec('SELECT * FROM jobs WHERE id = ?', [id]);
+      const result = db.exec(`SELECT * FROM jobs WHERE id = ${id}`);
       
       if (!result || result.length === 0 || result[0].values.length === 0) {
         return null;
@@ -417,6 +532,13 @@ function setupIpcHandlers() {
     try {
       const db = DatabaseService.getDatabase();
       
+      // First, ensure the job is marked as saved
+      db.exec(`
+        UPDATE jobs 
+        SET is_saved = 1, updated_at = datetime('now')
+        WHERE id = ${jobId}
+      `);
+      
       // Check if application already exists
       const checkResult = db.exec(`SELECT id FROM applications WHERE job_id = ${jobId}`);
       
@@ -424,15 +546,14 @@ function setupIpcHandlers() {
         // Update existing application
         db.exec(`
           UPDATE applications 
-          SET status = 'applied', applied_date = datetime('now')
+          SET status = 'applied', applied_date = datetime('now'), updated_at = datetime('now')
           WHERE job_id = ${jobId}
         `);
         logger.info('Application status updated to applied', { jobId });
       } else {
         // Create new application if materials were generated
         const materialsResult = db.exec(`
-          SELECT tailored_resume, cover_letter 
-          FROM applications 
+          SELECT id FROM applications 
           WHERE job_id = ${jobId} AND status = 'draft'
         `);
         
@@ -440,7 +561,7 @@ function setupIpcHandlers() {
           // Update draft to applied
           db.exec(`
             UPDATE applications 
-            SET status = 'applied', applied_date = datetime('now')
+            SET status = 'applied', applied_date = datetime('now'), updated_at = datetime('now')
             WHERE job_id = ${jobId} AND status = 'draft'
           `);
         } else {
@@ -594,33 +715,36 @@ function setupIpcHandlers() {
         // Column already exists, ignore
       }
       
-      // Insert resume
-      const stmt = db.prepare(`
+      // Insert resume - using string concatenation for SQL.js compatibility
+      const escapeSQL = (val: string) => val.replace(/'/g, "''");
+      const isPrimary = resumeData.is_primary ? 1 : 0;
+      const hardSkillsStr = parsed.hard_skills.length > 0 ? escapeSQL(parsed.hard_skills.join(',')) : null;
+      const softSkillsStr = parsed.soft_skills.length > 0 ? escapeSQL(parsed.soft_skills.join(',')) : null;
+      const toolsStr = parsed.tools_technologies.length > 0 ? escapeSQL(parsed.tools_technologies.join(',')) : null;
+      const yearsExp = parsed.years_of_experience || null;
+      const currentTitleStr = parsed.current_title ? escapeSQL(parsed.current_title) : null;
+      const eduStr = parsed.education.length > 0 ? escapeSQL(parsed.education.join('|')) : null;
+      const certsStr = parsed.certifications.length > 0 ? escapeSQL(parsed.certifications.join('|')) : null;
+      const workExpStr = parsed.work_experience.length > 0 ? escapeSQL(parsed.work_experience.join('|')) : null;
+      
+      db.exec(`
         INSERT INTO resumes (
-          user_id, name, is_primary, full_text, original_docx_template,
+          user_id, name, is_primary, full_text,
           hard_skills, soft_skills, tools_technologies,
           years_of_experience, current_title,
           education, certifications, work_experience
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (
+          1, '${escapeSQL(resumeData.name)}', ${isPrimary}, '${escapeSQL(fullText)}',
+          ${hardSkillsStr ? `'${hardSkillsStr}'` : 'NULL'},
+          ${softSkillsStr ? `'${softSkillsStr}'` : 'NULL'},
+          ${toolsStr ? `'${toolsStr}'` : 'NULL'},
+          ${yearsExp || 'NULL'},
+          ${currentTitleStr ? `'${currentTitleStr}'` : 'NULL'},
+          ${eduStr ? `'${eduStr}'` : 'NULL'},
+          ${certsStr ? `'${certsStr}'` : 'NULL'},
+          ${workExpStr ? `'${workExpStr}'` : 'NULL'}
+        )
       `);
-      
-      stmt.run([
-        1,
-        resumeData.name,
-        resumeData.is_primary ? 1 : 0,
-        fullText,
-        originalDocxBuffer,
-        parsed.hard_skills.length > 0 ? parsed.hard_skills.join(',') : null,
-        parsed.soft_skills.length > 0 ? parsed.soft_skills.join(',') : null,
-        parsed.tools_technologies.length > 0 ? parsed.tools_technologies.join(',') : null,
-        parsed.years_of_experience || null,
-        parsed.current_title || null,
-        parsed.education.length > 0 ? parsed.education.join('|') : null,
-        parsed.certifications.length > 0 ? parsed.certifications.join('|') : null,
-        parsed.work_experience.length > 0 ? parsed.work_experience.join('|') : null
-      ]);
-      
-      stmt.free();
       
       DatabaseService.save();
       
@@ -748,6 +872,88 @@ function setupIpcHandlers() {
     } catch (error) {
       logger.error('Failed to get application materials', { error, jobId });
       return null;
+    }
+  });
+
+  // Get all applications with job details
+  ipcMain.handle('get-all-applications', async () => {
+    try {
+      const db = DatabaseService.getDatabase();
+      const result = db.exec(`
+        SELECT 
+          a.id,
+          a.job_id,
+          a.resume_id,
+          a.status,
+          a.applied_date,
+          a.updated_at,
+          a.resume_version_snapshot,
+          a.cover_letter_text,
+          a.notes,
+          j.title as job_title,
+          j.company_name,
+          j.job_url,
+          j.platform
+        FROM applications a
+        LEFT JOIN jobs j ON a.job_id = j.id
+        ORDER BY a.updated_at DESC
+      `);
+
+      if (!result || result.length === 0 || result[0].values.length === 0) {
+        return [];
+      }
+
+      const columns = result[0].columns;
+      const apps = result[0].values.map((row: any) => {
+        const app: any = {};
+        columns.forEach((col: string, i: number) => {
+          app[col] = row[i];
+        });
+        return app;
+      });
+
+      logger.info('Retrieved applications', { count: apps.length });
+      return apps;
+    } catch (error) {
+      logger.error('Failed to get applications', { error });
+      return [];
+    }
+  });
+
+  // Update application status
+  ipcMain.handle('update-application-status', async (_, appId: number, status: string) => {
+    try {
+      const db = DatabaseService.getDatabase();
+      db.exec(`
+        UPDATE applications 
+        SET status = '${status}', updated_at = datetime('now')
+        WHERE id = ${appId}
+      `);
+      DatabaseService.save();
+      logger.info('Application status updated', { appId, status });
+      return true;
+    } catch (error) {
+      logger.error('Failed to update application status', { error, appId });
+      return false;
+    }
+  });
+
+  // Add note to application
+  ipcMain.handle('add-application-note', async (_, appId: number, note: string) => {
+    try {
+      const db = DatabaseService.getDatabase();
+      const escapedNote = note.replace(/'/g, "''");
+      db.exec(`
+        UPDATE applications 
+        SET notes = '${escapedNote}', updated_at = datetime('now')
+        WHERE id = ${appId}
+      `);
+      DatabaseService.save();
+      logger.info('Application note added', { appId });
+      return true;
+    } catch (error) {
+      logger.error('Failed to add application note', { error, appId });
+      return false;
     }
   });
 

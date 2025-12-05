@@ -10,10 +10,20 @@ export interface ExtensionJob {
   title: string;
   company: string | null;
   location: string | null;
+  locationType: string | null;
   description: string | null;
   salary: string | null;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  salaryCurrency?: string | null;
+  salaryPeriod: string | null;
   employmentType?: string | null;
   seniorityLevel?: string | null;
+  experienceYears: number | null;
+  educationLevel: string | null;
+  skills: string[] | null;
+  preferredSkills?: string[] | null;
+  benefits: string[] | null;
   detectedAt: string;
 }
 

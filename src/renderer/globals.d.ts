@@ -29,7 +29,10 @@ interface Window {
       getJobMatches: () => Promise<any[]>;
     };
     applications: {
+      getAll: () => Promise<any[]>;
       getMaterials: (jobId: number) => Promise<any>;
+      updateStatus: (id: number, status: string) => Promise<boolean>;
+      addNote: (id: number, note: string) => Promise<boolean>;
       downloadResume: (jobId: number) => Promise<void>;
       downloadCoverLetter: (jobId: number) => Promise<void>;
       regenerateMaterials: (jobId: number) => Promise<boolean>;

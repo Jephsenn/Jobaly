@@ -75,7 +75,7 @@
         }
       }
       
-      // Job description
+      // Job description - preserve formatting
       const descriptionSelectors = [
         '[data-test="jobDescriptionContent"]',
         '[class*="JobDetails_jobDescription"]',
@@ -85,16 +85,115 @@
       for (const selector of descriptionSelectors) {
         const elem = document.querySelector(selector);
         if (elem) {
-          description = elem.textContent.trim();
+          // Use innerText to preserve line breaks
+          description = elem.innerText.trim();
+          
+          // Parse structure if needed
+          if (!description.includes('\n\n')) {
+            const children = elem.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, div[class*="section"]');
+            if (children.length > 1) {
+              description = Array.from(children)
+                .map(child => child.textContent.trim())
+                .filter(text => text.length > 0)
+                .join('\n\n');
+            }
+          }
           break;
         }
       }
       
       // Salary
       let salary = null;
+      let salaryMin = null;
+      let salaryMax = null;
+      let salaryPeriod = null;
       const salaryElem = document.querySelector('[data-test="detailSalary"]');
       if (salaryElem) {
         salary = salaryElem.textContent.trim();
+        // Extract salary min/max
+        const numbers = salary.match(/\d+[,\d]*/g);
+        if (numbers && numbers.length >= 2) {
+          salaryMin = parseInt(numbers[0].replace(/,/g, ''));
+          salaryMax = parseInt(numbers[1].replace(/,/g, ''));
+        } else if (numbers && numbers.length === 1) {
+          salaryMin = parseInt(numbers[0].replace(/,/g, ''));
+        }
+        // Detect period (hourly vs annual)
+        if (salary.match(/hour|hr|\/hr/i)) {
+          salaryPeriod = 'hourly';
+        } else if (salary.match(/year|annual|\/yr/i) || numbers) {
+          salaryPeriod = 'annual';
+        }
+      }
+
+      // Location Type (Remote/Hybrid/Onsite)
+      let locationType = null;
+      const fullText = (description || '') + ' ' + (location || '');
+      if (fullText.match(/\b(remote|work from home|wfh)\b/i)) {
+        locationType = 'Remote';
+      } else if (fullText.match(/\b(hybrid|flexible)\b/i)) {
+        locationType = 'Hybrid';
+      } else if (location && !fullText.match(/remote|hybrid/i)) {
+        locationType = 'On-site';
+      }
+
+      // Employment Type
+      let employmentType = null;
+      if (fullText.match(/\b(full-time|full time|fulltime)\b/i)) {
+        employmentType = 'Full-time';
+      } else if (fullText.match(/\b(part-time|part time|parttime)\b/i)) {
+        employmentType = 'Part-time';
+      } else if (fullText.match(/\b(contract|contractor)\b/i)) {
+        employmentType = 'Contract';
+      }
+
+      // Experience Years
+      let experienceYears = null;
+      const expMatch = fullText.match(/(\d+)\+?\s*(?:years?|yrs?)\s*(?:of)?\s*experience/i);
+      if (expMatch) {
+        experienceYears = parseInt(expMatch[1]);
+      }
+
+      // Education Level
+      let educationLevel = null;
+      if (fullText.match(/\b(phd|ph\.d|doctorate)\b/i)) {
+        educationLevel = "PhD";
+      } else if (fullText.match(/\b(master'?s?|ms|m\.s|mba)\b/i)) {
+        educationLevel = "Master's";
+      } else if (fullText.match(/\b(bachelor'?s?|bs|b\.s|ba|b\.a)\b/i)) {
+        educationLevel = "Bachelor's";
+      } else if (fullText.match(/\b(associate'?s?|as|a\.s)\b/i)) {
+        educationLevel = "Associate's";
+      }
+
+      // Skills extraction
+      const commonSkills = [
+        'JavaScript', 'Python', 'Java', 'C\\+\\+', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Go',
+        'React', 'Angular', 'Vue', 'Node\\.js', 'Django', 'Flask', 'Spring', '\\.NET',
+        'SQL', 'MongoDB', 'PostgreSQL', 'MySQL', 'Redis', 'DynamoDB',
+        'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'CI/CD', 'Git', 'Jenkins',
+        'Machine Learning', 'AI', 'Data Science', 'TensorFlow', 'PyTorch'
+      ];
+      const skills = [];
+      for (const skill of commonSkills) {
+        const regex = new RegExp(`\\b${skill}\\b`, 'i');
+        if (regex.test(fullText)) {
+          // Remove escape characters when adding to array
+          skills.push(skill.replace(/\\\\/g, ''));
+        }
+      }
+
+      // Benefits extraction
+      const commonBenefits = [
+        '401k', 'health insurance', 'dental', 'vision', 'pto', 'paid time off',
+        'stock options', 'equity', 'bonus', 'flexible hours', 'wellness', 'tuition'
+      ];
+      const benefits = [];
+      for (const benefit of commonBenefits) {
+        const regex = new RegExp(`\\b${benefit}\\b`, 'i');
+        if (regex.test(fullText)) {
+          benefits.push(benefit);
+        }
       }
 
       return {
@@ -104,8 +203,17 @@
         title: title || 'Glassdoor Job',
         company: company || null,
         location: location || null,
+        locationType: locationType || null,
         description: description || null,
         salary: salary || null,
+        salaryMin: salaryMin || null,
+        salaryMax: salaryMax || null,
+        salaryPeriod: salaryPeriod || null,
+        employmentType: employmentType || null,
+        experienceYears: experienceYears || null,
+        educationLevel: educationLevel || null,
+        skills: skills.length > 0 ? skills : null,
+        benefits: benefits.length > 0 ? benefits : null,
         detectedAt: new Date().toISOString()
       };
       

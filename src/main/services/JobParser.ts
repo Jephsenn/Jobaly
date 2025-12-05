@@ -129,18 +129,168 @@ export class JobParser {
       }
     }
 
-    // Look for location patterns
-    const locationPattern = /(?:^|\n)(?:Location|Based in|Office):?\s*(.+?)(?:\n|$)/i;
-    const locationMatch = text.match(locationPattern);
-    if (locationMatch) {
-      info.location = locationMatch[1].trim();
+    // Look for location patterns - Enhanced
+    const locationPatterns = [
+      /(?:^|\n)(?:Location|Based in|Office|City|Where):?\s*(.+?)(?:\n|$)/i,
+      /(?:^|\n)(.+?),\s*[A-Z]{2}(?:\s+\d{5})?(?:\n|$)/,  // City, STATE format
+      /(?:^|\n)(?:in|@)\s+([A-Za-z\s]+,\s*[A-Z]{2,})/,  // "in City, State"
+    ];
+    
+    for (const pattern of locationPatterns) {
+      const match = text.match(pattern);
+      if (match && !info.location) {
+        info.location = match[1].trim();
+        break;
+      }
     }
 
-    // Look for salary patterns
-    const salaryPattern = /\$[\d,]+(?:\s*-\s*\$[\d,]+)?(?:\s*(?:per year|\/year|annually|\/yr))?/i;
-    const salaryMatch = text.match(salaryPattern);
-    if (salaryMatch) {
-      info.salary = salaryMatch[0];
+    // Look for work location type (Remote, Hybrid, On-site)
+    const locationTypePattern = /\b(Remote|Hybrid|On-site|In-office|Work from home|WFH)\b/i;
+    const locationTypeMatch = text.match(locationTypePattern);
+    if (locationTypeMatch) {
+      const type = locationTypeMatch[1].toLowerCase();
+      if (type.includes('remote') || type.includes('wfh') || type.includes('home')) {
+        info.locationType = 'remote';
+      } else if (type.includes('hybrid')) {
+        info.locationType = 'hybrid';
+      } else {
+        info.locationType = 'onsite';
+      }
+    }
+
+    // Look for salary patterns - Enhanced
+    const salaryPatterns = [
+      // $100,000 - $150,000 per year
+      /\$[\d,]+(?:\s*-\s*\$[\d,]+)?(?:\s*(?:per year|\/year|annually|\/yr|per annum|p\.a\.))?/i,
+      // $50/hour or $50/hr
+      /\$\d+(?:\.\d{2})?\s*(?:per hour|\/hour|\/hr|hourly)/i,
+      // 100k-150k format
+      /\$?\d+k\s*-\s*\$?\d+k/i,
+      // Salary: 100000 format
+      /(?:Salary|Compensation|Pay):?\s*\$?[\d,]+/i,
+    ];
+    
+    for (const pattern of salaryPatterns) {
+      const match = text.match(pattern);
+      if (match && !info.salary) {
+        info.salary = match[0];
+        
+        // Try to parse min/max and period
+        const salaryText = match[0];
+        
+        // Determine if hourly or annual
+        if (/hour|hr/i.test(salaryText)) {
+          info.salaryPeriod = 'hourly';
+        } else {
+          info.salaryPeriod = 'annual';
+        }
+        
+        // Extract numbers
+        const numbers = salaryText.match(/\d+[,\d]*/g);
+        if (numbers && numbers.length > 0) {
+          // Parse first number (min)
+          const firstNum = parseInt(numbers[0].replace(/,/g, ''));
+          if (!isNaN(firstNum)) {
+            // Handle 'k' notation (e.g., 100k = 100000)
+            if (/k/i.test(salaryText)) {
+              info.salaryMin = firstNum * 1000;
+            } else {
+              info.salaryMin = firstNum;
+            }
+          }
+          
+          // Parse second number (max) if range
+          if (numbers.length > 1) {
+            const secondNum = parseInt(numbers[1].replace(/,/g, ''));
+            if (!isNaN(secondNum)) {
+              if (/k/i.test(salaryText)) {
+                info.salaryMax = secondNum * 1000;
+              } else {
+                info.salaryMax = secondNum;
+              }
+            }
+          }
+        }
+        
+        info.salaryCurrency = 'USD'; // Default to USD
+        break;
+      }
+    }
+
+    // Look for employment type (Full-time, Part-time, Contract, etc.)
+    const employmentTypePattern = /\b(Full[- ]time|Part[- ]time|Contract|Temporary|Freelance|Internship|Per Diem)\b/i;
+    const employmentTypeMatch = text.match(employmentTypePattern);
+    if (employmentTypeMatch) {
+      const empType = employmentTypeMatch[1].replace(/[- ]/g, '-');
+      // Store in description or a custom field
+      if (!info.description) {
+        info.description = text;
+      }
+    }
+
+    // Look for experience level
+    const experiencePatterns = [
+      /(\d+)\+?\s*years?\s*(?:of\s*)?experience/i,
+      /\b(Entry[- ]level|Junior|Mid[- ]level|Senior|Lead|Principal|Staff)\b/i,
+    ];
+    
+    for (const pattern of experiencePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        if (pattern === experiencePatterns[0]) {
+          // Years of experience
+          const years = parseInt(match[1]);
+          if (!isNaN(years)) {
+            info.requiredExperienceYears = years;
+          }
+        }
+        // Seniority level could be stored in description or tags
+        break;
+      }
+    }
+
+    // Look for benefits
+    const benefitsPatterns = [
+      /(?:Benefits|Perks|We offer):(.+?)(?:\n\n|Requirements|Qualifications|$)/is,
+      /\b(401k|Health insurance|Dental|Vision|PTO|Paid time off|Stock options|Equity|Bonus|Gym|Free lunch|Remote work|Flexible hours|Parental leave)\b/gi,
+    ];
+    
+    const benefitsMatches: string[] = [];
+    for (const pattern of benefitsPatterns) {
+      const matches = text.matchAll(pattern);
+      for (const match of matches) {
+        if (match[1]) {
+          benefitsMatches.push(match[1].trim());
+        } else if (match[0]) {
+          benefitsMatches.push(match[0]);
+        }
+      }
+    }
+    
+    if (benefitsMatches.length > 0) {
+      info.benefits = Array.from(new Set(benefitsMatches));
+    }
+
+    // Look for education requirements
+    const educationPattern = /\b(Bachelor'?s?|Master'?s?|PhD|Doctorate|Associate)(?:\s+degree)?(?:\s+in\s+[\w\s]+)?/i;
+    const educationMatch = text.match(educationPattern);
+    if (educationMatch) {
+      const eduText = educationMatch[0].toLowerCase();
+      if (eduText.includes('bachelor')) {
+        info.educationLevel = 'bachelors';
+      } else if (eduText.includes('master')) {
+        info.educationLevel = 'masters';
+      } else if (eduText.includes('phd') || eduText.includes('doctorate')) {
+        info.educationLevel = 'phd';
+      }
+    }
+
+    // Extract skills using existing method
+    if (text.length > 50) {
+      const skills = this.extractSkills(text);
+      if (skills.length > 0) {
+        info.requiredSkills = skills;
+      }
     }
 
     // Store full description if it's substantial

@@ -215,7 +215,7 @@ export class ResumeParser {
    * Extract work experience entries
    */
   private static extractWorkExperience(text: string): string[] {
-    const experiences = [];
+    const experiences: string[] = [];
     
     // Look for date ranges that indicate work history
     const experiencePattern = /(20\d{2}|present)\s*[-–]\s*(20\d{2}|present)/gi;

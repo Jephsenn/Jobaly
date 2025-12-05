@@ -38,7 +38,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Application operations
   applications: {
+    getAll: () => ipcRenderer.invoke('get-all-applications'),
     getMaterials: (jobId) => ipcRenderer.invoke('get-application-materials', jobId),
+    updateStatus: (id, status) => ipcRenderer.invoke('update-application-status', id, status),
+    addNote: (id, note) => ipcRenderer.invoke('add-application-note', id, note),
     downloadResume: (jobId) => ipcRenderer.invoke('download-resume', jobId),
     downloadCoverLetter: (jobId) => ipcRenderer.invoke('download-cover-letter', jobId),
     regenerateMaterials: (jobId) => ipcRenderer.invoke('regenerate-materials', jobId),

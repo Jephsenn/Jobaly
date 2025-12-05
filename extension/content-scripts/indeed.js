@@ -77,7 +77,7 @@
         }
       }
       
-      // Job description
+      // Job description - preserve formatting
       const descriptionSelectors = [
         '#jobDescriptionText',
         '.jobsearch-jobDescriptionText',
@@ -87,16 +87,61 @@
       for (const selector of descriptionSelectors) {
         const elem = document.querySelector(selector);
         if (elem) {
-          description = elem.textContent.trim();
+          // Use innerText to preserve line breaks
+          description = elem.innerText.trim();
+          
+          // Parse structure if needed
+          if (!description.includes('\n\n')) {
+            const children = elem.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, div[class*="section"]');
+            if (children.length > 1) {
+              description = Array.from(children)
+                .map(child => child.textContent.trim())
+                .filter(text => text.length > 0)
+                .join('\n\n');
+            }
+          }
           break;
         }
       }
       
-      // Salary
+      // Salary - Enhanced
       let salary = null;
+      let salaryMin = null;
+      let salaryMax = null;
+      let salaryPeriod = null;
+      
       const salaryElem = document.querySelector('[data-testid="attribute_snippet_testid"]');
       if (salaryElem && salaryElem.textContent.includes('$')) {
         salary = salaryElem.textContent.trim();
+        
+        // Parse salary range
+        const numbers = salary.match(/\d+[,\d]*/g);
+        if (numbers && numbers.length > 0) {
+          salaryMin = parseInt(numbers[0].replace(/,/g, ''));
+          if (numbers.length > 1) {
+            salaryMax = parseInt(numbers[1].replace(/,/g, ''));
+          }
+        }
+        
+        // Detect period
+        if (/hour|hr/i.test(salary)) {
+          salaryPeriod = 'hourly';
+        } else {
+          salaryPeriod = 'annual';
+        }
+      }
+      
+      // Work location type
+      let locationType = null;
+      if (description) {
+        const desc = description.toLowerCase();
+        if (desc.match(/\b(fully remote|100% remote|work from home|wfh|remote position)\b/)) {
+          locationType = 'remote';
+        } else if (desc.match(/\bhybrid\b/)) {
+          locationType = 'hybrid';
+        } else if (desc.match(/\b(on-site|onsite|in-office)\b/)) {
+          locationType = 'onsite';
+        }
       }
       
       // Employment type
@@ -109,6 +154,56 @@
           break;
         }
       }
+      
+      // Experience level
+      let experienceYears = null;
+      let educationLevel = null;
+      let skills = [];
+      let benefits = [];
+      
+      if (description) {
+        // Extract years of experience
+        const expMatch = description.match(/(\d+)\+?\s*years?\s*(?:of\s*)?experience/i);
+        if (expMatch) {
+          experienceYears = parseInt(expMatch[1]);
+        }
+        
+        // Education level
+        if (/\b(bachelor'?s?|BS|BA)\b/i.test(description)) {
+          educationLevel = 'bachelors';
+        } else if (/\b(master'?s?|MS|MA|MBA)\b/i.test(description)) {
+          educationLevel = 'masters';
+        } else if (/\b(phd|doctorate)\b/i.test(description)) {
+          educationLevel = 'phd';
+        }
+        
+        // Extract skills
+        const commonSkills = [
+          'JavaScript', 'TypeScript', 'Python', 'Java', 'C\\+\\+', 'C#', 'Ruby', 'Go',
+          'React', 'Angular', 'Vue', 'Node\\.js', 'Django', 'Flask',
+          'SQL', 'MySQL', 'PostgreSQL', 'MongoDB',
+          'AWS', 'Azure', 'Docker', 'Kubernetes'
+        ];
+        
+        for (const skill of commonSkills) {
+          if (new RegExp(`\\b${skill}\\b`, 'i').test(description)) {
+            // Remove escape characters when adding to array
+            skills.push(skill.replace(/\\\\/g, ''));
+          }
+        }
+        
+        // Extract benefits
+        const benefitKeywords = [
+          '401k', 'Health insurance', 'Dental', 'Vision', 'PTO',
+          'Stock options', 'Bonus', 'Parental leave'
+        ];
+        
+        for (const benefit of benefitKeywords) {
+          if (new RegExp(`\\b${benefit}\\b`, 'i').test(description)) {
+            benefits.push(benefit);
+          }
+        }
+      }
 
       return {
         id: jobId,
@@ -117,9 +212,17 @@
         title: title || urlParams.get('q') || 'Indeed Job',
         company: company || null,
         location: location || null,
+        locationType: locationType || null,
         description: description || null,
         salary: salary || null,
+        salaryMin: salaryMin || null,
+        salaryMax: salaryMax || null,
+        salaryPeriod: salaryPeriod || null,
         employmentType: employmentType || null,
+        experienceYears: experienceYears || null,
+        educationLevel: educationLevel || null,
+        skills: skills.length > 0 ? skills : null,
+        benefits: benefits.length > 0 ? benefits : null,
         detectedAt: new Date().toISOString()
       };
       

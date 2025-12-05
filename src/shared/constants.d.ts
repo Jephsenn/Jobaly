@@ -1,0 +1,53 @@
+export declare const APP_NAME = "Job Search Assistant";
+export declare const APP_VERSION = "0.1.0";
+export declare const DATABASE_NAME = "job_search.db";
+export declare const ENCRYPTION_ALGORITHM = "aes-256-gcm";
+export declare const SUPPORTED_PLATFORMS: readonly ["linkedin", "indeed", "glassdoor", "dice", "monster", "ziprecruiter", "custom"];
+export declare const JOB_STATUS: readonly ["applied", "screening", "interview", "offer", "rejected", "withdrawn"];
+export declare const NOTIFICATION_TYPES: readonly ["job_match", "follow_up_reminder", "interview_reminder", "offer_deadline"];
+export declare const COVER_LETTER_TONES: readonly ["professional", "enthusiastic", "conversational", "formal"];
+export declare const MATCH_WEIGHTS: {
+    readonly hardSkills: 0.4;
+    readonly softSkills: 0.2;
+    readonly experience: 0.2;
+    readonly titleAlignment: 0.1;
+    readonly industryAlignment: 0.1;
+};
+export declare const SKILL_MATCH_WEIGHTS: {
+    readonly required: 0.7;
+    readonly preferred: 0.3;
+};
+export declare const EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
+export declare const EMBEDDING_DIMENSIONS = 384;
+export declare const CLIPBOARD_POLL_INTERVAL = 1000;
+export declare const WINDOW_POLL_INTERVAL = 2000;
+export declare const PLATFORM_PATTERNS: {
+    readonly linkedin: RegExp;
+    readonly indeed: RegExp;
+    readonly glassdoor: RegExp;
+    readonly dice: RegExp;
+};
+export declare const JOB_PLATFORMS: Record<string, string[]>;
+export declare const HOURS_PER_YEAR = 2080;
+export declare const USER_DATA_DIR: string;
+export declare const APP_DATA_DIR: string;
+export declare const DATABASE_PATH: string;
+export declare const BACKUPS_DIR: string;
+export declare const EXPORTS_DIR: string;
+export declare const LOGS_DIR: string;
+export declare const LOG_LEVEL: string;
+export declare const LOG_MAX_SIZE: number;
+export declare const LOG_MAX_FILES = 5;
+export declare const WIDGET_WIDTH = 400;
+export declare const WIDGET_HEIGHT = 300;
+export declare const WIDGET_MARGIN = 20;
+export declare const MAX_CONCURRENT_EMBEDDINGS = 5;
+export declare const EMBEDDING_CACHE_SIZE = 1000;
+export declare const DATABASE_VACUUM_INTERVAL: number;
+export declare const MIN_RESUME_LENGTH = 100;
+export declare const MAX_RESUME_LENGTH = 50000;
+export declare const MIN_COVER_LETTER_LENGTH = 200;
+export declare const MAX_COVER_LETTER_LENGTH = 600;
+export declare const MIN_MATCH_SCORE_THRESHOLD = 0;
+export declare const MAX_MATCH_SCORE_THRESHOLD = 1;
+//# sourceMappingURL=constants.d.ts.map

@@ -67,6 +67,35 @@
       
       console.log('LinkedIn: Found job ID:', jobId);
       
+      // Debug: Log all job insight elements to see what LinkedIn provides
+      // Try multiple possible selectors for the pill badges
+      const insightSelectors = [
+        '.jobs-unified-top-card__job-insight',
+        'li.jobs-unified-top-card__job-insight-view-model-secondary',
+        '.job-details-jobs-unified-top-card__job-insight',
+        // Sometimes they're in spans with specific classes
+        'span.ui-label',
+        '.artdeco-pill',
+        // Or in the top card criteria area
+        '[class*="job-details-jobs-unified-top-card"]',
+      ];
+      
+      let allInsights = [];
+      for (const selector of insightSelectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          allInsights = [...allInsights, ...Array.from(elements)];
+        }
+      }
+      
+      // Remove duplicates
+      allInsights = [...new Set(allInsights)];
+      
+      console.log('LinkedIn: Found', allInsights.length, 'job insight elements:');
+      allInsights.forEach((insight, index) => {
+        console.log(`  [${index}]:`, insight.textContent.trim());
+      });
+      
       // Job title - multiple possible selectors
       const titleSelectors = [
         '.job-details-jobs-unified-top-card__job-title',
@@ -122,7 +151,7 @@
         }
       }
       
-      // Job description
+      // Job description - preserve formatting with line breaks
       const descriptionSelectors = [
         '.jobs-description-content__text',
         '.jobs-description__content',
@@ -132,39 +161,250 @@
       for (const selector of descriptionSelectors) {
         const elem = document.querySelector(selector);
         if (elem) {
-          description = elem.textContent.trim();
+          // Use innerText instead of textContent to preserve line breaks
+          description = elem.innerText.trim();
+          
+          // Also try to add breaks between major sections
+          // If innerText didn't preserve breaks well, parse the HTML structure
+          if (!description.includes('\n\n')) {
+            const children = elem.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, div.section, strong');
+            if (children.length > 1) {
+              description = Array.from(children)
+                .map(child => child.textContent.trim())
+                .filter(text => text.length > 0)
+                .join('\n\n');
+            }
+          }
           break;
         }
       }
       
-      // Salary (if available)
+      // Salary (if available) - Check all insight elements we found
       let salary = null;
-      const salaryElem = document.querySelector('.job-details-jobs-unified-top-card__job-insight-view-model-secondary');
-      if (salaryElem) {
-        const salaryText = salaryElem.textContent;
-        if (salaryText.includes('$')) {
-          salary = salaryText.trim();
-        }
-      }
+      let salaryMin = null;
+      let salaryMax = null;
+      let salaryPeriod = null;
       
-      // Employment type (Full-time, Contract, etc.)
-      let employmentType = null;
-      const insightElements = document.querySelectorAll('.job-details-jobs-unified-top-card__job-insight');
-      for (const elem of insightElements) {
+      // Check the insight elements we already collected
+      for (const elem of allInsights) {
         const text = elem.textContent.trim();
-        if (text.match(/full-time|part-time|contract|temporary|internship/i)) {
-          employmentType = text;
+        // Only match if it starts with $ or contains salary-like pattern
+        if (text.match(/^\$/) || text.match(/\$\d+[kK]?/)) {
+          console.log('LinkedIn: Found salary in insight:', text);
+          salary = text;
+          
+          // Parse salary range - handle formats like $55K/yr - $60K/yr or $100,000 - $150,000
+          // Match specifically: $NUMBER(K optional) - $NUMBER(K optional)
+          const rangeMatch = text.match(/\$(\d+(?:,\d{3})*)[kK]?\s*[-–]\s*\$?(\d+(?:,\d{3})*)[kK]?/i);
+          
+          if (rangeMatch) {
+            // Range found
+            const min = rangeMatch[1].replace(/,/g, '');
+            const max = rangeMatch[2].replace(/,/g, '');
+            
+            // Check if K notation is used
+            if (text.match(/\$\d+[kK]/i)) {
+              salaryMin = parseInt(min) * 1000;
+              salaryMax = parseInt(max) * 1000;
+            } else {
+              salaryMin = parseInt(min);
+              salaryMax = parseInt(max);
+            }
+            console.log('LinkedIn: Parsed salary range:', salaryMin, '-', salaryMax);
+          } else {
+            // Try single value
+            const singleMatch = text.match(/\$(\d+(?:,\d{3})*)[kK]?/i);
+            if (singleMatch) {
+              const val = singleMatch[1].replace(/,/g, '');
+              salaryMin = text.match(/[kK]/) ? parseInt(val) * 1000 : parseInt(val);
+              console.log('LinkedIn: Parsed single salary:', salaryMin);
+            }
+          }
+          
+          // Detect period
+          if (/hour|hr|\/hr/i.test(text)) {
+            salaryPeriod = 'hourly';
+          } else if (/year|yr|\/yr|annual/i.test(text)) {
+            salaryPeriod = 'annual';
+          }
           break;
         }
       }
       
-      // Seniority level
+      if (!salary) {
+        console.log('LinkedIn: No salary found with any selector');
+        
+        // Try to extract from description as fallback
+        if (description) {
+          const salaryPatterns = [
+            /\$(\d+[,\d]*)[kK]?\s*-\s*\$?(\d+[,\d]*)[kK]?/,  // $100k - $150k or $100,000 - $150,000
+            /\$(\d+[,\d]*)\s*-\s*\$?(\d+[,\d]*)\s*(?:per\s*year|annually|\/year|\/yr)/i,  // $100,000 - 150,000 per year
+            /\$(\d+[,\d]*)\s*(?:per\s*hour|hourly|\/hour|\/hr)/i  // $50 per hour
+          ];
+          
+          for (const pattern of salaryPatterns) {
+            const match = description.match(pattern);
+            if (match) {
+              if (match.length === 3) {
+                // Range found
+                let min = match[1].replace(/,/g, '');
+                let max = match[2].replace(/,/g, '');
+                
+                // Handle 'k' notation (100k = 100000)
+                if (match[0].includes('k') || match[0].includes('K')) {
+                  min = min + '000';
+                  max = max + '000';
+                }
+                
+                salaryMin = parseInt(min);
+                salaryMax = parseInt(max);
+                salary = `$${salaryMin.toLocaleString()} - $${salaryMax.toLocaleString()}`;
+              } else if (match.length === 2) {
+                // Single value found
+                let val = match[1].replace(/,/g, '');
+                if (match[0].includes('k') || match[0].includes('K')) {
+                  val = val + '000';
+                }
+                salaryMin = parseInt(val);
+                salary = `$${salaryMin.toLocaleString()}`;
+              }
+              
+              // Detect period
+              if (/hour|hr/i.test(match[0])) {
+                salaryPeriod = 'hourly';
+              } else {
+                salaryPeriod = 'annual';
+              }
+              
+              console.log('LinkedIn: Extracted salary from description:', salary);
+              break;
+            }
+          }
+        }
+      }
+      
+      // Work location type (Remote, Hybrid, On-site) - check insight elements
+      let locationType = null;
+      for (const elem of allInsights) {
+        const text = elem.textContent.trim().toLowerCase();
+        if (text === 'remote' || text.includes('remote') && !text.includes('site')) {
+          locationType = 'remote';
+          console.log('LinkedIn: Found location type:', locationType);
+          break;
+        } else if (text === 'hybrid') {
+          locationType = 'hybrid';
+          console.log('LinkedIn: Found location type:', locationType);
+          break;
+        } else if (text === 'on-site' || text === 'onsite') {
+          locationType = 'onsite';
+          console.log('LinkedIn: Found location type:', locationType);
+          break;
+        }
+      }
+      
+      // If not found in insights, check description
+      if (!locationType && description) {
+        const desc = description.toLowerCase();
+        if (desc.match(/\b(fully remote|100% remote|work from home|wfh)\b/)) {
+          locationType = 'remote';
+        } else if (desc.match(/\bhybrid\b/)) {
+          locationType = 'hybrid';
+        }
+      }
+      
+      // Employment type (Full-time, Contract, etc.) - check insight elements
+      let employmentType = null;
+      for (const elem of allInsights) {
+        const text = elem.textContent.trim().toLowerCase();
+        if (text === 'full-time' || text === 'fulltime') {
+          employmentType = 'Full-time';
+          console.log('LinkedIn: Found employment type:', employmentType);
+          break;
+        } else if (text === 'part-time' || text === 'parttime') {
+          employmentType = 'Part-time';
+          console.log('LinkedIn: Found employment type:', employmentType);
+          break;
+        } else if (text === 'contract') {
+          employmentType = 'Contract';
+          console.log('LinkedIn: Found employment type:', employmentType);
+          break;
+        } else if (text === 'internship') {
+          employmentType = 'Internship';
+          console.log('LinkedIn: Found employment type:', employmentType);
+          break;
+        }
+      }
+      
+      // Seniority level / Experience
       let seniorityLevel = null;
-      for (const elem of insightElements) {
+      let experienceYears = null;
+      
+      // Check job insights for seniority level
+      const seniorityElements = document.querySelectorAll('.job-details-jobs-unified-top-card__job-insight, .jobs-unified-top-card__job-insight');
+      for (const elem of seniorityElements) {
         const text = elem.textContent.trim();
         if (text.match(/entry level|associate|mid-senior|director|executive/i)) {
           seniorityLevel = text;
+          console.log('LinkedIn: Found seniority level:', seniorityLevel);
           break;
+        }
+      }
+      
+      // Extract years of experience from description
+      if (description) {
+        const expMatch = description.match(/(\d+)\+?\s*years?\s*(?:of\s*)?experience/i);
+        if (expMatch) {
+          experienceYears = parseInt(expMatch[1]);
+          console.log('LinkedIn: Found experience years:', experienceYears);
+        }
+      }
+      
+      // Extract skills from description
+      let skills = [];
+      if (description) {
+        const commonSkills = [
+          'JavaScript', 'TypeScript', 'Python', 'Java', 'C\\+\\+', 'C#', 'Ruby', 'Go', 'Rust', 'Swift',
+          'React', 'Angular', 'Vue', 'Node\\.js', 'Django', 'Flask', 'Spring',
+          'SQL', 'MySQL', 'PostgreSQL', 'MongoDB', 'Redis',
+          'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes',
+          'Git', 'Agile', 'Scrum'
+        ];
+        
+        for (const skill of commonSkills) {
+          const regex = new RegExp(`\\b${skill}\\b`, 'i');
+          if (regex.test(description)) {
+            // Remove escape characters when adding to array
+            skills.push(skill.replace(/\\\\/g, ''));
+          }
+        }
+      }
+      
+      // Extract benefits from description
+      let benefits = [];
+      if (description) {
+        const benefitKeywords = [
+          '401k', 'Health insurance', 'Dental', 'Vision', 'PTO', 
+          'Paid time off', 'Stock options', 'Equity', 'Bonus',
+          'Parental leave', 'Flexible hours', 'Remote work'
+        ];
+        
+        for (const benefit of benefitKeywords) {
+          const regex = new RegExp(`\\b${benefit}\\b`, 'i');
+          if (regex.test(description)) {
+            benefits.push(benefit);
+          }
+        }
+      }
+      
+      // Education level
+      let educationLevel = null;
+      if (description) {
+        if (/\b(bachelor'?s?|BS|BA)\b/i.test(description)) {
+          educationLevel = 'bachelors';
+        } else if (/\b(master'?s?|MS|MA|MBA)\b/i.test(description)) {
+          educationLevel = 'masters';
+        } else if (/\b(phd|doctorate)\b/i.test(description)) {
+          educationLevel = 'phd';
         }
       }
 
@@ -175,10 +415,18 @@
         title: title || `LinkedIn Job ${jobId}`,
         company: company || null,
         location: location || null,
+        locationType: locationType || null,
         description: description || null,
         salary: salary || null,
+        salaryMin: salaryMin || null,
+        salaryMax: salaryMax || null,
+        salaryPeriod: salaryPeriod || null,
         employmentType: employmentType || null,
         seniorityLevel: seniorityLevel || null,
+        experienceYears: experienceYears || null,
+        educationLevel: educationLevel || null,
+        skills: skills.length > 0 ? skills : null,
+        benefits: benefits.length > 0 ? benefits : null,
         detectedAt: new Date().toISOString()
       };
       
