@@ -1,16 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import type { Job } from '@shared/types';
-
-interface MatchScore {
-  overall: number;
-  skills: number;
-  experience: number;
-  title: number;
-}
+import ReactDOM from 'react-dom';
+import type { Job } from '@services/database';
+import { jobsAPI, applicationsAPI, resumesAPI } from '@services/database';
+import { enhanceResumeForJob, getAISettings } from '../../services/resumeEnhancer';
+import { generateResumeDocx } from '../../services/resumeGenerator';
+import { calculateMatchScore, getMatchScoreColor, type MatchScoreBreakdown } from '../../services/matchScoreCalculator';
 
 const Dashboard: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [matchScores, setMatchScores] = useState<Record<number, MatchScore>>({});
+  const [matchScores, setMatchScores] = useState<Record<number, MatchScoreBreakdown>>({});
+  const [showBreakdown, setShowBreakdown] = useState<number | null>(null);
   const [stats, setStats] = useState({
     jobsDetected: 0,
     jobsThisWeek: 0,
@@ -18,54 +17,93 @@ const Dashboard: React.FC = () => {
     interviews: 0,
   });
 
-  // Load jobs on mount
+  // Load jobs on mount and when page becomes visible
   useEffect(() => {
-    // Check if electronAPI is available
-    if (!window.electronAPI) {
-      console.error('electronAPI not available - preload script may not have loaded');
-      return;
-    }
-
     loadJobs();
 
-    // Listen for new jobs (only set up listener once)
-    const handleJobAdded = async (job: any) => {
-      console.log('Dashboard: Job added event received, reloading data...');
-      // Reload everything to ensure match scores and complete data are loaded
-      await loadJobs();
+    // Listen for jobs from browser extension (custom event)
+    const handleJobDetected = () => {
+      console.log('Dashboard: Job detected from extension, reloading...');
+      loadJobs();
     };
     
-    window.electronAPI.jobs.onJobAdded(handleJobAdded);
+    // Listen for page visibility changes (recalculate when user returns to tab)
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        console.log('Dashboard: Page visible, recalculating match scores...');
+        loadJobs();
+      }
+    };
+    
+    window.addEventListener('jobDetected', handleJobDetected as EventListener);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      window.removeEventListener('jobDetected', handleJobDetected as EventListener);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []); // Empty dependency array - only run once
 
   const loadJobs = async () => {
-    if (!window.electronAPI) return;
-    
     try {
-      const allJobs = await window.electronAPI.jobs.getAll();
+      const allJobs = await jobsAPI.getAll();
       setJobs(allJobs);
       
-      // Load match scores
-      try {
-        const matches = await window.electronAPI.matches.getJobMatches();
-        setMatchScores(matches || {});
-      } catch (error) {
-        console.error('Failed to load match scores:', error);
+      // Calculate match scores for each job
+      const primaryResume = await resumesAPI.getPrimary();
+      console.log('Primary resume:', primaryResume ? 'Found' : 'Not found');
+      
+      const calculatedScores: Record<number, MatchScoreBreakdown> = {};
+      
+      if (primaryResume) {
+        console.log('Calculating match scores for', allJobs.length, 'jobs');
+        allJobs.forEach(job => {
+          if (job.id) {
+            const score = calculateMatchScore(primaryResume, job);
+            calculatedScores[job.id] = score;
+            console.log(`Job "${job.title}" - Match: ${score.overall}%`, score.details);
+          }
+        });
+      } else {
+        console.log('No primary resume - using neutral scores');
+        // No resume uploaded - use neutral scores
+        allJobs.forEach(job => {
+          if (job.id) {
+            calculatedScores[job.id] = {
+              overall: 50,
+              skills: 50,
+              experience: 50,
+              title: 50,
+              keywords: 50,
+              details: {
+                matchedSkills: [],
+                missingSkills: [],
+                experienceGap: 0,
+                titleSimilarity: 'No resume uploaded',
+                keywordMatches: 0,
+                totalKeywords: 0
+              }
+            };
+          }
+        });
       }
+      setMatchScores(calculatedScores);
       
       // Calculate stats
       const oneWeekAgo = new Date();
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
 
       const recentJobs = allJobs.filter(j => 
-        new Date(j.detectedAt) > oneWeekAgo
+        new Date(j.created_at) > oneWeekAgo
       );
+
+      const applications = await applicationsAPI.getAll();
 
       setStats({
         jobsDetected: allJobs.length,
         jobsThisWeek: recentJobs.length,
-        applications: allJobs.filter(j => j.status === 'applied').length,
-        interviews: 0, // TODO: Track interviews
+        applications: applications.length,
+        interviews: applications.filter(a => a.status === 'interview').length,
       });
     } catch (error) {
       console.error('Failed to load jobs:', error);
@@ -73,22 +111,55 @@ const Dashboard: React.FC = () => {
   };
 
   const handleSaveJob = async (jobId: number) => {
-    if (!window.electronAPI) return;
-    await window.electronAPI.jobs.updateStatus(jobId, 'saved');
+    await jobsAPI.markSaved(jobId, true);
     loadJobs();
   };
 
   const handleDismissJob = async (jobId: number) => {
-    if (!window.electronAPI) return;
-    await window.electronAPI.jobs.updateStatus(jobId, 'dismissed');
+    await jobsAPI.delete(jobId);
     loadJobs();
   };
 
   const handleMarkApplied = async (jobId: number) => {
-    if (!window.electronAPI) return;
-    const success = await window.electronAPI.jobs.markApplied(jobId);
-    if (success) {
-      loadJobs(); // Reload jobs to refresh the UI
+    // Create application record
+    await applicationsAPI.add({
+      job_id: jobId,
+      status: 'applied',
+      applied_date: new Date().toISOString()
+    });
+    await jobsAPI.markSaved(jobId, true);
+    loadJobs();
+  };
+
+  const handleEnhanceResume = async (job: Job) => {
+    try {
+      // Check if AI is enabled
+      const aiSettings = getAISettings();
+      if (!aiSettings.enabled) {
+        alert('Please enable AI in Settings to use resume enhancement features.');
+        return;
+      }
+
+      // Get primary resume
+      const primaryResume = await resumesAPI.getPrimary();
+      if (!primaryResume) {
+        alert('Please upload a resume first in the Resumes page.');
+        return;
+      }
+
+      // Show loading state
+      const originalButtonText = 'Enhancing...';
+      
+      // Enhance resume for this job
+      const enhanced = await enhanceResumeForJob(primaryResume, job);
+      
+      // Generate and download DOCX
+      await generateResumeDocx(enhanced);
+      
+      alert('✅ Resume enhanced and downloaded successfully!');
+    } catch (error) {
+      console.error('Failed to enhance resume:', error);
+      alert(`❌ Failed to enhance resume: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -142,15 +213,25 @@ const Dashboard: React.FC = () => {
           {jobs.length === 0 ? (
             <div className="text-center py-12">
               <div className="text-6xl mb-4">🔍</div>
-              <h3 className="text-lg font-medium text-gray-900 mb-2">No jobs detected yet</h3>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Welcome to Jobaly!</h3>
               <p className="text-gray-600 mb-6 max-w-md mx-auto">
-                Copy a job URL from LinkedIn, Indeed, or any job platform to get started.
-                The app will automatically detect it and show you how well it matches your resume.
+                Your job search dashboard is empty. Let's get started!
               </p>
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-lg mx-auto">
-                <p className="text-sm text-blue-800">
-                  <strong>💡 Tip:</strong> The app is now monitoring your clipboard. 
-                  Just browse jobs normally and copy URLs - we'll automatically capture them!
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-lg mx-auto mb-4">
+                <p className="text-sm text-blue-800 mb-3">
+                  <strong>🧪 Testing the app?</strong> Add sample data to explore:
+                </p>
+                <code className="block bg-white px-3 py-2 rounded border border-blue-300 text-xs text-blue-900 font-mono">
+                  await seedTestData()
+                </code>
+                <p className="text-xs text-blue-700 mt-2">
+                  Open browser console (F12) and paste the command above
+                </p>
+              </div>
+              <div className="bg-green-50 border border-green-200 rounded-lg p-4 max-w-lg mx-auto">
+                <p className="text-sm text-green-800">
+                  <strong>💡 Coming Soon:</strong> Browser extension integration will automatically 
+                  detect jobs as you browse LinkedIn, Indeed, and other platforms!
                 </p>
               </div>
             </div>
@@ -161,9 +242,12 @@ const Dashboard: React.FC = () => {
                   key={job.id} 
                   job={job}
                   matchScore={matchScores[job.id!]}
+                  showBreakdown={showBreakdown === job.id}
+                  onToggleBreakdown={() => setShowBreakdown(showBreakdown === job.id ? null : job.id!)}
                   onSave={() => handleSaveJob(job.id!)}
                   onDismiss={() => handleDismissJob(job.id!)}
                   onMarkApplied={() => handleMarkApplied(job.id!)}
+                  onEnhanceResume={() => handleEnhanceResume(job)}
                 />
               ))}
             </div>
@@ -176,47 +260,89 @@ const Dashboard: React.FC = () => {
 
 interface JobCardProps {
   job: Job;
-  matchScore?: MatchScore;
+  matchScore?: MatchScoreBreakdown;
+  showBreakdown?: boolean;
+  onToggleBreakdown?: () => void;
   onSave: () => void;
   onDismiss: () => void;
   onMarkApplied: () => void;
+  onEnhanceResume: () => void;
 }
 
-const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, onMarkApplied }) => {
+const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onToggleBreakdown, onSave, onDismiss, onMarkApplied, onEnhanceResume }) => {
   const [showMaterials, setShowMaterials] = React.useState(false);
   const [materials, setMaterials] = React.useState<any>(null);
   const [applicationStatus, setApplicationStatus] = React.useState<string | null>(null);
   const [showDetails, setShowDetails] = React.useState(false);
+  const [tooltipPosition, setTooltipPosition] = React.useState({ top: 0, left: 0, maxHeight: 0 });
+  const breakdownRef = React.useRef<HTMLDivElement>(null);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+
+  // Close breakdown when clicking outside
+  React.useEffect(() => {
+    if (!showBreakdown) return;
+    
+    const handleClickOutside = (event: MouseEvent) => {
+      if (breakdownRef.current && !breakdownRef.current.contains(event.target as Node)) {
+        onToggleBreakdown?.();
+      }
+    };
+    
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showBreakdown, onToggleBreakdown]);
+
+  // Calculate tooltip position when shown - always below badge
+  React.useEffect(() => {
+    if (!showBreakdown || !buttonRef.current) return;
+
+    const updatePosition = () => {
+      if (buttonRef.current) {
+        const rect = buttonRef.current.getBoundingClientRect();
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
+        
+        setTooltipPosition({
+          top: rect.bottom + scrollTop + 8,
+          left: Math.max(8, Math.min(rect.left + scrollLeft, window.innerWidth - 328)), // Keep within viewport (320px width + 8px margin)
+          maxHeight: 600 // Fixed reasonable height, let page scroll
+        });
+      }
+    };
+
+    // Initial position
+    updatePosition();
+
+    // Update position on scroll
+    window.addEventListener('scroll', updatePosition, true); // Use capture phase to catch all scrolls
+    window.addEventListener('resize', updatePosition);
+
+    return () => {
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [showBreakdown]);
 
   // Check if there's an application for this job
   React.useEffect(() => {
     const checkApplication = async () => {
-      if (!window.electronAPI || !job.id) return;
-      const mats = await window.electronAPI.applications.getMaterials(job.id);
-      if (mats) {
-        setApplicationStatus(mats.status);
+      if (!job.id) return;
+      const apps = await applicationsAPI.getByJobId(job.id);
+      if (apps && apps.length > 0) {
+        setApplicationStatus(apps[0].status);
       }
     };
     checkApplication();
   }, [job.id]);
 
   const loadMaterials = async () => {
-    if (!window.electronAPI || !job.id) return;
-    const mats = await window.electronAPI.applications.getMaterials(job.id);
-    setMaterials(mats);
-    setShowMaterials(true);
+    // TODO: AI-generated materials will be added in future update
+    alert('AI-generated resumes and cover letters coming soon!');
   };
 
   const handleRegenerateMaterials = async () => {
-    if (!window.electronAPI || !job.id) return;
-    const success = await window.electronAPI.applications.regenerateMaterials(job.id);
-    if (success) {
-      // Reload materials if modal is open
-      if (showMaterials) {
-        const mats = await window.electronAPI.applications.getMaterials(job.id);
-        setMaterials(mats);
-      }
-    }
+    // TODO: AI-generated materials will be added in future update
+    alert('AI-generated materials regeneration coming soon!');
   };
   const timeAgo = (date: Date | string) => {
     const detectedDate = typeof date === 'string' ? new Date(date) : date;
@@ -232,13 +358,12 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, o
     return `${Math.floor(seconds / 86400)}d ago`;
   };
 
-  // Database uses job_url and company_name, not url and company
-  const jobUrl = (job as any).job_url || job.url;
-  const companyName = (job as any).company_name || job.company;
+  // Use snake_case database fields
+  const jobUrl = job.url;
+  const companyName = job.company_name;
   const jobTitle = job.title && job.title !== 'Untitled Position' ? job.title : null;
-  const isSaved = (job as any).is_saved === 1;
-  const isArchived = (job as any).is_archived === 1;
-  const detectedAt = (job as any).detected_at || job.detectedAt;
+  const isSaved = job.is_saved;
+  const detectedAt = job.created_at;
 
   // Extract title from URL if not provided
   const displayTitle = jobTitle || extractTitleFromUrl(jobUrl, job.platform) || 'Job Posting';
@@ -252,9 +377,9 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, o
   };
 
   return (
-    <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
+    <div className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow overflow-hidden">
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm font-medium text-gray-500">{job.platform}</span>
             <span className="text-gray-300">•</span>
@@ -262,9 +387,173 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, o
             {matchScore && (
               <>
                 <span className="text-gray-300">•</span>
-                <div className={`px-2 py-1 rounded-md border text-xs font-semibold ${getMatchColor(matchScore.overall)}`}>
-                  {matchScore.overall}% Match
-                </div>
+                {matchScore.overall === 50 && matchScore.details.matchedSkills?.length === 0 ? (
+                  // No resume uploaded - show warning icon
+                  <button
+                    ref={buttonRef}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleBreakdown?.();
+                    }}
+                    className="px-2 py-1 rounded-md border border-orange-200 bg-orange-50 text-orange-700 text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity flex items-center gap-1"
+                    title="Upload a resume to calculate match score"
+                  >
+                    <span className="text-base">⚠️</span>
+                    <span>No Match Score</span>
+                  </button>
+                ) : (
+                  // Resume uploaded - show match score
+                  <button
+                    ref={buttonRef}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleBreakdown?.();
+                    }}
+                    className={`px-2 py-1 rounded-md border text-xs font-semibold cursor-pointer hover:opacity-80 transition-opacity ${getMatchColor(matchScore.overall)}`}
+                    title="Click for match breakdown"
+                  >
+                    {matchScore.overall}% Match
+                  </button>
+                )}
+
+                  
+                {/* Match Score Breakdown Tooltip - Rendered via Portal */}
+                {showBreakdown && ReactDOM.createPortal(
+                  <div 
+                    ref={breakdownRef} 
+                    className="absolute w-80 bg-white border border-gray-300 rounded-lg shadow-xl p-4 z-50"
+                    style={{ 
+                      top: `${tooltipPosition.top}px`, 
+                      left: `${tooltipPosition.left}px`
+                    }}
+                  >
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="font-semibold text-gray-900">Match Breakdown</h4>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onToggleBreakdown?.();
+                          }}
+                          className="text-gray-400 hover:text-gray-600"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      
+                      {/* Overall Score */}
+                      <div className={`mb-3 p-2 rounded ${getMatchColor(matchScore.overall)}`}>
+                        <div className="text-center">
+                          <div className="text-2xl font-bold">{matchScore.overall}%</div>
+                          <div className="text-xs">Overall Match</div>
+                        </div>
+                      </div>
+                      
+                      {/* Component Scores */}
+                      <div className="space-y-3">
+                        {/* Skills */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="font-medium">Skills (40%)</span>
+                            <span className={`font-semibold ${matchScore.skills >= 70 ? 'text-green-600' : matchScore.skills >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+                              {matchScore.skills}%
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                            <div
+                              className={`h-2 rounded-full ${matchScore.skills >= 70 ? 'bg-green-500' : matchScore.skills >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                              style={{ width: `${matchScore.skills}%` }}
+                            />
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {matchScore.details.matchedSkills?.length || 0} matched, {matchScore.details.missingSkills?.length || 0} missing
+                          </div>
+                          {matchScore.details.matchedSkills && matchScore.details.matchedSkills.length > 0 && (
+                            <div className="text-xs text-green-700 mt-1">
+                              ✓ {matchScore.details.matchedSkills.slice(0, 3).join(', ')}
+                              {matchScore.details.matchedSkills.length > 3 && ` +${matchScore.details.matchedSkills.length - 3} more`}
+                            </div>
+                          )}
+                          {matchScore.details.missingSkills && matchScore.details.missingSkills.length > 0 && (
+                            <div className="text-xs text-red-700 mt-1">
+                              ✗ {matchScore.details.missingSkills.slice(0, 3).join(', ')}
+                              {matchScore.details.missingSkills.length > 3 && ` +${matchScore.details.missingSkills.length - 3} more`}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Experience */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="font-medium">Experience (25%)</span>
+                            <span className={`font-semibold ${matchScore.experience >= 70 ? 'text-green-600' : matchScore.experience >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+                              {matchScore.experience}%
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                            <div
+                              className={`h-2 rounded-full ${matchScore.experience >= 70 ? 'bg-green-500' : matchScore.experience >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                              style={{ width: `${matchScore.experience}%` }}
+                            />
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {matchScore.details.experienceGap}
+                          </div>
+                        </div>
+                        
+                        {/* Title */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="font-medium">Title Match (20%)</span>
+                            <span className={`font-semibold ${matchScore.title >= 70 ? 'text-green-600' : matchScore.title >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+                              {matchScore.title}%
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                            <div
+                              className={`h-2 rounded-full ${matchScore.title >= 70 ? 'bg-green-500' : matchScore.title >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                              style={{ width: `${matchScore.title}%` }}
+                            />
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {matchScore.details.titleSimilarity}
+                          </div>
+                        </div>
+                        
+                        {/* Keywords */}
+                        <div>
+                          <div className="flex justify-between text-sm mb-1">
+                            <span className="font-medium">Keywords (15%)</span>
+                            <span className={`font-semibold ${matchScore.keywords >= 70 ? 'text-green-600' : matchScore.keywords >= 40 ? 'text-yellow-600' : 'text-red-600'}`}>
+                              {matchScore.keywords}%
+                            </span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                            <div
+                              className={`h-2 rounded-full ${matchScore.keywords >= 70 ? 'bg-green-500' : matchScore.keywords >= 40 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                              style={{ width: `${matchScore.keywords}%` }}
+                            />
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {matchScore.details.keywordMatches || 0} / {matchScore.details.totalKeywords || 0} keywords found
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Info Message */}
+                      {matchScore.overall === 50 && matchScore.details.matchedSkills?.length === 0 && (
+                        <div className="mt-3 p-3 bg-orange-50 border border-orange-200 rounded-lg text-sm text-orange-800">
+                          <div className="flex items-start gap-2">
+                            <span className="text-lg">⚠️</span>
+                            <div>
+                              <div className="font-semibold mb-1">No Resume Uploaded</div>
+                              <div className="text-xs">Upload a resume in the Resumes page to calculate accurate match scores for your jobs.</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  , document.body
+                )}
               </>
             )}
           </div>
@@ -286,29 +575,34 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, o
               </div>
             )}
 
-            {((job as any).location_type || job.locationType) && (
+            {job.location_type && (
               <div className="flex items-center gap-1 text-sm font-medium text-blue-700 bg-blue-50 px-2 py-1 rounded-full">
                 <span>
-                  {((job as any).location_type || job.locationType) === 'remote' && '🏠'}
-                  {((job as any).location_type || job.locationType) === 'hybrid' && '🔄'}
-                  {((job as any).location_type || job.locationType) === 'onsite' && '🏢'}
+                  {job.location_type === 'remote' && '🏠'}
+                  {job.location_type === 'hybrid' && '🔄'}
+                  {job.location_type === 'onsite' && '🏢'}
                 </span>
-                <span className="capitalize">{(job as any).location_type || job.locationType}</span>
+                <span className="capitalize">{job.location_type}</span>
               </div>
             )}
 
-            {(job.salary || (job as any).salary_min) && (
+            {(job.salary_min || job.salary_max) && (
               <div className="flex items-center gap-1 text-sm font-semibold text-green-700 bg-green-50 px-2 py-1 rounded-full">
                 <span>💰</span>
                 <span>
-                  {job.salary || 
-                    ((job as any).salary_min && (job as any).salary_max 
-                      ? `$${((job as any).salary_min).toLocaleString()} - $${((job as any).salary_max).toLocaleString()}`
-                      : (job as any).salary_min 
-                        ? `$${((job as any).salary_min).toLocaleString()}+`
+                  {job.salary_min && job.salary_max 
+                    ? `$${job.salary_min.toLocaleString()} - $${job.salary_max.toLocaleString()}`
+                    : job.salary_min 
+                      ? `$${job.salary_min.toLocaleString()}+`
+                      : job.salary_max
+                        ? `Up to $${job.salary_max.toLocaleString()}`
                         : 'Salary available'
-                    )
                   }
+                  {job.salary_period && (
+                    <span className="text-xs opacity-80">
+                      /{job.salary_period === 'hourly' ? 'hr' : 'yr'}
+                    </span>
+                  )}
                 </span>
               </div>
             )}
@@ -328,72 +622,63 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, o
           )}
         </div>
 
-        <div className="flex flex-col gap-2 ml-4">
-          {!isSaved && !isArchived && (
+        <div className="flex flex-col gap-2 flex-shrink-0 w-32">
+          {!isSaved && (
             <>
               <button
                 onClick={onSave}
-                className="px-4 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition-colors whitespace-nowrap"
+                className="px-3 py-2 bg-primary-600 text-white text-sm rounded-lg hover:bg-primary-700 transition-colors whitespace-nowrap w-full"
               >
                 💾 Save
               </button>
               <button
                 onClick={onDismiss}
-                className="px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors"
+                className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors w-full"
               >
                 Dismiss
               </button>
             </>
           )}
-          {isSaved && !isArchived && applicationStatus === 'applied' && (
+          {isSaved && applicationStatus === 'applied' && (
             <>
-              <span className="px-4 py-2 bg-blue-100 text-blue-700 text-sm rounded-lg font-medium text-center">
+              <span className="px-2 py-2 bg-blue-100 text-blue-700 text-xs rounded-lg font-medium text-center w-full">
                 ✉️ Applied
               </span>
               <button
-                onClick={handleRegenerateMaterials}
-                className="px-3 py-2 border border-purple-300 text-purple-700 text-sm rounded-lg hover:bg-purple-50 transition-colors whitespace-nowrap"
+                onClick={() => setShowDetails(!showDetails)}
+                className="px-2 py-2 border border-blue-300 text-blue-700 text-xs rounded-lg hover:bg-blue-50 transition-colors w-full"
               >
-                🔄 Regenerate
-              </button>
-              <button
-                onClick={loadMaterials}
-                className="px-3 py-2 border border-blue-300 text-blue-700 text-sm rounded-lg hover:bg-blue-50 transition-colors"
-              >
-                📄 View Materials
+                📄 Details
               </button>
             </>
           )}
-          {isSaved && !isArchived && (!applicationStatus || applicationStatus === 'draft') && (
+          {isSaved && (!applicationStatus || applicationStatus === 'draft') && (
             <>
-              <span className="px-4 py-2 bg-green-100 text-green-700 text-sm rounded-lg font-medium text-center">
+              <span className="px-2 py-2 bg-green-100 text-green-700 text-xs rounded-lg font-medium text-center w-full">
                 ✓ Saved
               </span>
               <button
+                onClick={onEnhanceResume}
+                className="px-2 py-2 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 transition-colors w-full"
+                title="Generate AI-enhanced resume for this job"
+              >
+                📝 Resume
+              </button>
+              <button
                 onClick={onMarkApplied}
-                className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
+                className="px-2 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition-colors w-full"
               >
-                ✉️ Mark Applied
+                ✉️ Applied
               </button>
               <button
-                onClick={handleRegenerateMaterials}
-                className="px-3 py-2 border border-purple-300 text-purple-700 text-sm rounded-lg hover:bg-purple-50 transition-colors whitespace-nowrap"
+                onClick={() => setShowDetails(!showDetails)}
+                className="px-2 py-2 border border-blue-300 text-blue-700 text-xs rounded-lg hover:bg-blue-50 transition-colors w-full"
               >
-                🔄 Regenerate
-              </button>
-              <button
-                onClick={loadMaterials}
-                className="px-3 py-2 border border-blue-300 text-blue-700 text-sm rounded-lg hover:bg-blue-50 transition-colors"
-              >
-                📄 View Materials
+                📄 Details
               </button>
             </>
           )}
-          {isArchived && (
-            <span className="px-4 py-2 bg-gray-100 text-gray-600 text-sm rounded-lg font-medium">
-              Dismissed
-            </span>
-          )}
+
         </div>
       </div>
 
@@ -435,29 +720,20 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, onSave, onDismiss, o
               </div>
             </div>
             <div className="p-6 border-t bg-gray-50 flex justify-end gap-3">
+              {/* TODO: Enable once AI generation is implemented */}
               <button
-                onClick={async () => {
-                  try {
-                    await window.electronAPI.applications.downloadResume(job.id);
-                  } catch (error) {
-                    console.error('Failed to download resume:', error);
-                  }
-                }}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                disabled
+                className="px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed"
+                title="AI generation coming soon"
               >
-                ⬇️ Download Resume
+                ⬇️ Download Resume (Soon)
               </button>
               <button
-                onClick={async () => {
-                  try {
-                    await window.electronAPI.applications.downloadCoverLetter(job.id);
-                  } catch (error) {
-                    console.error('Failed to download cover letter:', error);
-                  }
-                }}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                disabled
+                className="px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed"
+                title="AI generation coming soon"
               >
-                ⬇️ Download Cover Letter
+                ⬇️ Download Cover Letter (Soon)
               </button>
               <button
                 onClick={() => navigator.clipboard.writeText(materials.tailored_resume)}
@@ -591,7 +867,7 @@ interface JobDetailsModalProps {
   jobUrl: string;
   companyName: string;
   displayTitle: string;
-  matchScore?: MatchScore;
+  matchScore?: MatchScoreBreakdown;
   getMatchColor: (score: number) => string;
   onClose: () => void;
 }
@@ -653,16 +929,16 @@ const JobDetailsModal: React.FC<JobDetailsModalProps> = ({
                 </div>
               )}
 
-              {((job as any).location_type || job.locationType) && (
+              {job.location_type && (
                 <div className="bg-blue-50 p-4 rounded-lg">
                   <div className="text-sm text-gray-600 mb-1">Work Type</div>
                   <div className="flex items-center gap-2 text-blue-900 font-medium">
                     <span>
-                      {((job as any).location_type || job.locationType) === 'remote' && '🏠'}
-                      {((job as any).location_type || job.locationType) === 'hybrid' && '🔄'}
-                      {((job as any).location_type || job.locationType) === 'onsite' && '🏢'}
+                      {job.location_type === 'remote' && '🏠'}
+                      {job.location_type === 'hybrid' && '🔄'}
+                      {job.location_type === 'onsite' && '🏢'}
                     </span>
-                    <span className="capitalize">{(job as any).location_type || job.locationType}</span>
+                    <span className="capitalize">{job.location_type}</span>
                   </div>
                 </div>
               )}

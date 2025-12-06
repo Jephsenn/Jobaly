@@ -8,6 +8,7 @@ yarn.lock
 
 # Build outputs
 dist/
+dist-electron/
 build/
 release/
 *.exe
@@ -15,6 +16,7 @@ release/
 *.app
 *.AppImage
 *.deb
+*.zip
 
 # Database
 *.db

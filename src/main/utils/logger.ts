@@ -1,7 +1,7 @@
 import winston from 'winston';
 import path from 'path';
 import fs from 'fs';
-import { LOGS_DIR, LOG_LEVEL, LOG_MAX_SIZE, LOG_MAX_FILES } from '@shared/constants';
+import { LOGS_DIR, LOG_LEVEL, LOG_MAX_SIZE, LOG_MAX_FILES } from '../../shared/constants';
 
 // Ensure logs directory exists
 if (!fs.existsSync(LOGS_DIR)) {

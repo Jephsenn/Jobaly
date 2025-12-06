@@ -1,5 +1,5 @@
 import initSqlJs, { Database } from 'sql.js';
-import { DATABASE_PATH, APP_DATA_DIR } from '@shared/constants';
+import { DATABASE_PATH, APP_DATA_DIR } from '../../shared/constants';
 import fs from 'fs';
 import path from 'path';
 import { logger } from '../utils/logger';

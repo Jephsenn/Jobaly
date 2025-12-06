@@ -1,14 +1,15 @@
 /**
  * Background Service Worker
- * Handles communication between content scripts and desktop app via HTTP
+ * Handles communication between content scripts and Jobaly web app
  */
 
 let isEnabled = true;
+const WEB_APP_URL = 'http://localhost:3000'; // Change to production URL when deployed
 
 // Load settings from storage
 chrome.storage.local.get(['enabled'], (result) => {
   isEnabled = result.enabled !== false;
-  console.log('📋 Job Search Assistant loaded, auto-capture:', isEnabled ? 'ON' : 'OFF');
+  console.log('📋 Jobaly Extension loaded, auto-capture:', isEnabled ? 'ON' : 'OFF');
 });
 
 // Listen for job data from content scripts
@@ -25,14 +26,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log('📋 Job detected:', jobTitle, 'at', jobCompany);
     console.log('🔗 URL:', message.job.url);
     
-    // Send to desktop app via HTTP (port 45782)
-    sendToDesktopApp(message.job)
+    // Send to web app by posting message to all Jobaly tabs
+    sendToWebApp(message.job)
       .then(() => {
-        console.log('✅ Sent to desktop app successfully');
-        sendResponse({ success: true, method: 'http' });
+        console.log('✅ Sent to Jobaly web app successfully');
+        sendResponse({ success: true, method: 'web-app' });
       })
       .catch((error) => {
-        console.warn('⚠ Desktop app not reachable:', error.message);
+        console.warn('⚠ Web app not reachable:', error.message);
         console.log('💾 Storing locally instead');
         storeJobLocally(message.job);
         sendResponse({ success: true, method: 'local' });
@@ -67,34 +68,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// Send job to desktop app via TCP socket
-async function sendToDesktopApp(job) {
-  const url = 'http://127.0.0.1:45782';
+// Send job to web app by posting message to all Jobaly tabs
+async function sendToWebApp(job) {
+  console.log('🔍 Looking for Jobaly tabs at:', WEB_APP_URL);
   
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      type: 'JOB_DETECTED',
-      job: job
-    })
-  });
+  // Find all tabs with the web app open
+  const tabs = await chrome.tabs.query({ url: `${WEB_APP_URL}/*` });
   
-  if (!response.ok) {
-    throw new Error('Desktop app returned error');
+  console.log(`📊 Found ${tabs.length} Jobaly tab(s)`);
+  
+  if (tabs.length === 0) {
+    console.warn('⚠️ No Jobaly tabs found. Make sure http://localhost:3000 is open!');
+    throw new Error('No Jobaly tabs open');
   }
   
-  return response.json();
+  // Send message to all web app tabs
+  let successCount = 0;
+  for (const tab of tabs) {
+    if (tab.id) {
+      try {
+        console.log(`📤 Sending to tab ${tab.id} (${tab.url})`);
+        await chrome.tabs.sendMessage(tab.id, {
+          type: 'JOB_DETECTED',
+          job: job
+        });
+        console.log(`✅ Sent to Jobaly tab ${tab.id}`);
+        successCount++;
+      } catch (error) {
+        console.error(`❌ Failed to send to tab ${tab.id}:`, error);
+      }
+    }
+  }
+  
+  if (successCount === 0) {
+    throw new Error('Failed to send to any tabs');
+  }
+  
+  return { success: true };
 }
 
-// Check if desktop app is running
+// Check if web app is open
 async function checkDesktopAppConnection() {
   try {
-    const response = await fetch('http://127.0.0.1:45782', {
-      method: 'GET',
-      signal: AbortSignal.timeout(1000)
-    });
-    return response.ok;
+    const tabs = await chrome.tabs.query({ url: `${WEB_APP_URL}/*` });
+    return tabs.length > 0;
   } catch {
     return false;
   }

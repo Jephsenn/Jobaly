@@ -193,39 +193,58 @@
           console.log('LinkedIn: Found salary in insight:', text);
           salary = text;
           
-          // Parse salary range - handle formats like $55K/yr - $60K/yr or $100,000 - $150,000
-          // Match specifically: $NUMBER(K optional) - $NUMBER(K optional)
-          const rangeMatch = text.match(/\$(\d+(?:,\d{3})*)[kK]?\s*[-–]\s*\$?(\d+(?:,\d{3})*)[kK]?/i);
+          // Detect period FIRST before parsing numbers
+          // This prevents confusion when description mentions both hourly and annual
+          if (/\$.*?\/hr|per hour|hourly/i.test(text)) {
+            salaryPeriod = 'hourly';
+          } else if (/\$.*?\/yr|per year|annual|yearly/i.test(text)) {
+            salaryPeriod = 'annual';
+          }
+          
+          // Parse salary range - handle formats like:
+          // $55K/yr - $60K/yr
+          // $97.6k - 100k (decimals with K)
+          // $100,000 - $150,000
+          // $65/hr - $75/hr
+          // $60.00/hr-$65.00/hr
+          
+          // Improved regex to capture K notation separately and handle decimals
+          const rangeMatch = text.match(/\$(\d+(?:[.,]\d+)?(?:,\d{3})*)([kK])?(?:\/(?:hr|yr))?\s*[-–]\s*\$?(\d+(?:[.,]\d+)?(?:,\d{3})*)([kK])?(?:\/(?:hr|yr))?/i);
           
           if (rangeMatch) {
             // Range found
-            const min = rangeMatch[1].replace(/,/g, '');
-            const max = rangeMatch[2].replace(/,/g, '');
+            let min = rangeMatch[1].replace(/,/g, '');
+            let max = rangeMatch[3].replace(/,/g, '');
+            const minHasK = rangeMatch[2]; // K notation for first number
+            const maxHasK = rangeMatch[4]; // K notation for second number
             
-            // Check if K notation is used
-            if (text.match(/\$\d+[kK]/i)) {
-              salaryMin = parseInt(min) * 1000;
-              salaryMax = parseInt(max) * 1000;
-            } else {
-              salaryMin = parseInt(min);
-              salaryMax = parseInt(max);
+            // Parse as floats to handle decimals like $60.00 or $97.6k
+            min = parseFloat(min);
+            max = parseFloat(max);
+            
+            // Apply K multiplier if present (separately for each number)
+            if (minHasK) {
+              min = min * 1000;
             }
+            if (maxHasK) {
+              max = max * 1000;
+            }
+            
+            // Ensure min is actually the minimum (sometimes they're backwards)
+            salaryMin = Math.min(min, max);
+            salaryMax = Math.max(min, max);
+            
             console.log('LinkedIn: Parsed salary range:', salaryMin, '-', salaryMax);
           } else {
-            // Try single value
-            const singleMatch = text.match(/\$(\d+(?:,\d{3})*)[kK]?/i);
+            // Try single value - handle decimals and /hr or /yr suffixes
+            const singleMatch = text.match(/\$(\d+(?:[.,]\d+)?(?:,\d{3})*)([kK])?/i);
             if (singleMatch) {
               const val = singleMatch[1].replace(/,/g, '');
-              salaryMin = text.match(/[kK]/) ? parseInt(val) * 1000 : parseInt(val);
+              const hasK = singleMatch[2];
+              const numVal = parseFloat(val);
+              salaryMin = hasK ? numVal * 1000 : numVal;
               console.log('LinkedIn: Parsed single salary:', salaryMin);
             }
-          }
-          
-          // Detect period
-          if (/hour|hr|\/hr/i.test(text)) {
-            salaryPeriod = 'hourly';
-          } else if (/year|yr|\/yr|annual/i.test(text)) {
-            salaryPeriod = 'annual';
           }
           break;
         }

@@ -1,13 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "Job Search Assistant",
+  "name": "Jobaly",
   "version": "1.0.0",
-  "description": "Automatically capture job postings and match them to your resume",
+  "description": "AI-powered job search assistant - Automatically capture jobs and calculate match scores",
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
+    "http://localhost/*",
+    "https://*.vercel.app/*",
     "https://*.linkedin.com/*",
     "https://*.indeed.com/*",
     "https://*.glassdoor.com/*",
@@ -23,6 +26,15 @@
     "service_worker": "background.js"
   },
   "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://localhost:*/*",
+        "https://*.vercel.app/*"
+      ],
+      "js": ["content-scripts/jobaly-app.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": [
         "https://*.linkedin.com/*"

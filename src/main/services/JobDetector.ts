@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { clipboard } from 'electron';
 import logger from '../utils/logger';
-import { JOB_PLATFORMS } from '@shared/constants';
+import { JOB_PLATFORMS } from '../../shared/constants';
 
 export interface DetectedJob {
   url: string;

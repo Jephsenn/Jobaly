@@ -7,14 +7,17 @@ export default defineConfig({
   root: path.join(__dirname, 'src/renderer'),
   publicDir: path.join(__dirname, 'public'),
   build: {
-    outDir: path.join(__dirname, 'dist/renderer'),
+    outDir: path.join(__dirname, 'dist'),
     emptyOutDir: true,
   },
   resolve: {
     alias: {
       '@': path.join(__dirname, 'src'),
-      '@renderer': path.join(__dirname, 'src/renderer'),
-      '@shared': path.join(__dirname, 'src/shared'),
+      '@components': path.join(__dirname, 'src/renderer/components'),
+      '@pages': path.join(__dirname, 'src/renderer/pages'),
+      '@services': path.join(__dirname, 'src/services'),
+      '@types': path.join(__dirname, 'src/types'),
+      '@shared': path.join(__dirname, 'src/shared'), // Keep for now during migration
     },
   },
   server: {

@@ -1,5 +1,5 @@
-import logger from '../utils/logger';
-import type { Job } from '@shared/types';
+import { logger } from '../utils/logger';
+import type { Job } from '../../shared/types';
 
 /**
  * Job Parser Service

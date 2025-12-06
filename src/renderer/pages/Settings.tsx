@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { getAISettings, saveAISettings, testAIConnection, type AISettings } from '../../services/resumeEnhancer';
+import { getMatchScoreSettings, saveMatchScoreSettings, type MatchScoreSettings } from '../../services/matchScoreCalculator';
+import { dataAPI } from '../../services/database';
 
 interface UserSettings {
   name: string;
@@ -20,8 +23,13 @@ export default function Settings() {
     email: '',
     phone: ''
   });
+  const [aiSettings, setAiSettings] = useState<AISettings>(getAISettings());
+  const [matchSettings, setMatchSettings] = useState<MatchScoreSettings>(getMatchScoreSettings());
+  const [desiredTitlesInput, setDesiredTitlesInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState('');
+  const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -29,10 +37,14 @@ export default function Settings() {
 
   const loadSettings = async () => {
     try {
-      const loaded = await window.electronAPI.settings.get();
-      if (loaded) {
-        setSettings(loaded);
+      const stored = localStorage.getItem('jobaly_user_settings');
+      if (stored) {
+        setSettings(JSON.parse(stored));
       }
+      
+      const matchScoreSettings = getMatchScoreSettings();
+      setMatchSettings(matchScoreSettings);
+      setDesiredTitlesInput(matchScoreSettings.desiredJobTitles.join(', '));
     } catch (error) {
       console.error('Failed to load settings:', error);
     }
@@ -45,33 +57,254 @@ export default function Settings() {
     });
   };
 
+  const handleAIChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target;
+    setAiSettings({
+      ...aiSettings,
+      [name]: type === 'checkbox' ? (e.target as HTMLInputElement).checked : value
+    });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setMessage('');
     try {
-      await window.electronAPI.settings.save(settings);
-      setMessage('Settings saved successfully!');
+      // Parse desired job titles
+      const titlesArray = desiredTitlesInput
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+      
+      const updatedMatchSettings = {
+        ...matchSettings,
+        desiredJobTitles: titlesArray
+      };
+      
+      localStorage.setItem('jobaly_user_settings', JSON.stringify(settings));
+      saveAISettings(aiSettings);
+      saveMatchScoreSettings(updatedMatchSettings);
+      setMatchSettings(updatedMatchSettings);
+      
+      setMessage('✅ Settings saved successfully!');
       setTimeout(() => setMessage(''), 3000);
     } catch (error) {
-      setMessage('Failed to save settings');
+      setMessage('❌ Failed to save settings');
       console.error('Failed to save settings:', error);
     } finally {
       setSaving(false);
     }
   };
 
+  const handleTestConnection = async () => {
+    setTesting(true);
+    setMessage('');
+    try {
+      const success = await testAIConnection(aiSettings);
+      setMessage(success ? '✅ AI connection successful!' : '❌ AI connection failed. Please check your API key and settings.');
+    } catch (error) {
+      setMessage('❌ AI connection failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const handleExportData = async () => {
+    try {
+      await dataAPI.exportAll();
+      setMessage('✅ Data exported successfully!');
+      setTimeout(() => setMessage(''), 3000);
+    } catch (error) {
+      setMessage('❌ Export failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
+  const handleImportData = async () => {
+    try {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.json';
+      input.onchange = async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (file) {
+          const text = await file.text();
+          const data = JSON.parse(text);
+          await dataAPI.importData(data);
+          setMessage('✅ Data imported successfully!');
+          setTimeout(() => setMessage(''), 3000);
+        }
+      };
+      input.click();
+    } catch (error) {
+      setMessage('❌ Import failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  };
+
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">Settings</h1>
+    <div className="p-8 max-w-4xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-900 mb-8">Settings</h1>
       
       {message && (
-        <div className={`mb-4 p-3 rounded ${message.includes('success') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+        <div className={`mb-6 p-4 rounded-lg ${message.includes('✅') ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
           {message}
         </div>
       )}
 
-      <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">Contact Information</h2>
+      {/* AI Configuration Section */}
+      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+        <h2 className="text-xl font-semibold mb-2">🤖 AI Resume Enhancement</h2>
+        <p className="text-gray-600 mb-6">
+          Configure AI to automatically enhance your resume bullet points and tailor them to specific jobs.
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                name="enabled"
+                checked={aiSettings.enabled}
+                onChange={handleAIChange}
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <span className="ml-2 text-sm font-medium text-gray-900">
+                Enable AI-powered resume enhancement
+              </span>
+            </label>
+          </div>
+
+          {aiSettings.enabled && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  AI Provider
+                </label>
+                <select
+                  name="provider"
+                  value={aiSettings.provider}
+                  onChange={handleAIChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="openai">OpenAI (GPT-4o-mini)</option>
+                  <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  API Key
+                </label>
+                <div className="relative">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    name="apiKey"
+                    value={aiSettings.apiKey || ''}
+                    onChange={handleAIChange}
+                    className="w-full px-3 py-2 pr-20 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder={aiSettings.provider === 'openai' ? 'sk-...' : 'sk-ant-...'}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 text-sm text-gray-500 hover:text-gray-700"
+                  >
+                    {showApiKey ? '👁️ Hide' : '👁️ Show'}
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  {aiSettings.provider === 'openai' 
+                    ? 'Get your API key from platform.openai.com'
+                    : 'Get your API key from console.anthropic.com'}
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Model (Optional)
+                </label>
+                <input
+                  type="text"
+                  name="model"
+                  value={aiSettings.model || ''}
+                  onChange={handleAIChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder={aiSettings.provider === 'openai' ? 'gpt-4o-mini' : 'claude-3-5-sonnet-20241022'}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Leave blank to use the default model
+                </p>
+              </div>
+
+              <div>
+                <button
+                  onClick={handleTestConnection}
+                  disabled={testing || !aiSettings.apiKey}
+                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+                >
+                  {testing ? 'Testing...' : '🔌 Test Connection'}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Job Matching Preferences Section */}
+      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+        <h2 className="text-xl font-semibold mb-2">🎯 Job Matching Preferences</h2>
+        <p className="text-gray-600 mb-6">
+          Configure your job search preferences to improve match scores and AI-tailored resumes.
+        </p>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Desired Job Titles
+            </label>
+            <input
+              type="text"
+              value={desiredTitlesInput}
+              onChange={(e) => setDesiredTitlesInput(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Software Engineer, Full Stack Developer, Frontend Engineer"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Enter comma-separated job titles you're targeting. This helps calculate better match scores and tailor your resume more effectively.
+            </p>
+          </div>
+
+          {matchSettings.desiredJobTitles.length > 0 && (
+            <div className="mt-2">
+              <p className="text-sm font-medium text-gray-700 mb-2">Your target roles:</p>
+              <div className="flex flex-wrap gap-2">
+                {matchSettings.desiredJobTitles.map((title, idx) => (
+                  <span
+                    key={idx}
+                    className="px-3 py-1 bg-blue-100 text-blue-800 text-sm rounded-full"
+                  >
+                    {title}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+            <h3 className="text-sm font-semibold text-blue-900 mb-2">
+              💡 How Match Scores Work
+            </h3>
+            <ul className="text-sm text-blue-800 space-y-1">
+              <li>• <strong>Skills (40%):</strong> Matches your resume skills with job requirements</li>
+              <li>• <strong>Experience (25%):</strong> Compares your years of experience with job needs</li>
+              <li>• <strong>Title (20%):</strong> How well the job matches your desired roles</li>
+              <li>• <strong>Keywords (15%):</strong> Relevant terms from job description found in your resume</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      {/* Contact Information Section */}
+      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+        <h2 className="text-xl font-semibold mb-2">Contact Information</h2>
         <p className="text-gray-600 mb-6">
           This information will be used in your tailored resumes and cover letters.
         </p>
@@ -184,8 +417,43 @@ export default function Settings() {
             disabled={saving}
             className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
-            {saving ? 'Saving...' : 'Save Settings'}
+            {saving ? 'Saving...' : 'Save All Settings'}
           </button>
+        </div>
+      </div>
+
+      {/* Data Management Section */}
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <h2 className="text-xl font-semibold mb-2">💾 Data Management</h2>
+        <p className="text-gray-600 mb-6">
+          Export your data for backup or import data from a previous export.
+        </p>
+
+        <div className="flex gap-4">
+          <button
+            onClick={handleExportData}
+            className="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+          >
+            📥 Export Data
+          </button>
+          <button
+            onClick={handleImportData}
+            className="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+          >
+            📤 Import Data
+          </button>
+        </div>
+
+        <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+          <h3 className="text-sm font-semibold text-blue-900 mb-2">
+            💡 About Your Data
+          </h3>
+          <ul className="text-sm text-blue-800 space-y-1">
+            <li>• All data is stored locally in your browser using IndexedDB</li>
+            <li>• Export creates a JSON backup file you can save anywhere</li>
+            <li>• Import will replace all current data with the imported data</li>
+            <li>• Your data is never sent to any server (except AI APIs when enabled)</li>
+          </ul>
         </div>
       </div>
     </div>

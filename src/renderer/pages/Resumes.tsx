@@ -1,17 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-
-interface Resume {
-  id: number;
-  name: string;
-  is_primary: boolean;
-  full_text: string;
-  hard_skills: string | null;
-  soft_skills: string | null;
-  years_of_experience: number | null;
-  current_title: string | null;
-  created_at: string;
-  updated_at: string;
-}
+import { resumesAPI, type Resume } from '../../services/database';
+import { parsePDFResume } from '../../services/pdfParser';
+import { parseDOCXResume } from '../../services/docxParser';
 
 export default function Resumes() {
   const [resumes, setResumes] = useState<Resume[]>([]);
@@ -22,7 +12,7 @@ export default function Resumes() {
   // Load resumes from database
   const loadResumes = useCallback(async () => {
     try {
-      const result = await window.electronAPI.resumes.getAll();
+      const result = await resumesAPI.getAll();
       setResumes(result);
     } catch (error) {
       console.error('Failed to load resumes:', error);
@@ -50,24 +40,63 @@ export default function Resumes() {
     setUploading(true);
 
     try {
-      // Read file as ArrayBuffer for binary formats
+      // Convert file to base64 for storage
       const arrayBuffer = await file.arrayBuffer();
-      const buffer = new Uint8Array(arrayBuffer);
+      const base64File = btoa(
+        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+      );
       
-      const resumeData = {
-        name: file.name,
-        fileBuffer: Array.from(buffer), // Convert to regular array for IPC
-        fileType: fileExt,
-        is_primary: resumes.length === 0 // Make first resume primary
-      };
-
-      const result = await window.electronAPI.resumes.save(resumeData);
+      let resumeData: Omit<Resume, 'id' | 'created_at'>;
       
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to save resume');
+      // Parse based on file type
+      if (fileExt === '.pdf') {
+        const parsed = await parsePDFResume(file);
+        resumeData = {
+          name: file.name,
+          full_text: parsed.fullText,
+          is_primary: resumes.length === 0,
+          original_file: base64File,
+          file_type: 'pdf',
+          sections: parsed.sections,
+          work_experiences: parsed.workExperiences,
+          hard_skills: parsed.skills.join(', '),
+          email: parsed.email,
+          phone: parsed.phone,
+          linkedin: parsed.linkedin,
+          website: parsed.website
+        };
+      } else if (fileExt === '.docx' || fileExt === '.doc') {
+        const parsed = await parseDOCXResume(file);
+        resumeData = {
+          name: file.name,
+          full_text: parsed.fullText,
+          is_primary: resumes.length === 0,
+          original_file: base64File,
+          file_type: 'docx',
+          sections: parsed.sections,
+          work_experiences: parsed.workExperiences,
+          hard_skills: parsed.skills.join(', '),
+          email: parsed.email,
+          phone: parsed.phone,
+          linkedin: parsed.linkedin,
+          website: parsed.website
+        };
+      } else {
+        // Text file
+        const fullText = await file.text();
+        resumeData = {
+          name: file.name,
+          full_text: fullText,
+          is_primary: resumes.length === 0,
+          original_file: base64File,
+          file_type: 'txt'
+        };
       }
-      
+
+      await resumesAPI.add(resumeData);
       await loadResumes();
+      
+      alert(`Resume uploaded and parsed successfully! ${resumeData.work_experiences?.length || 0} work experiences and ${resumeData.hard_skills?.split(',').length || 0} skills detected.`);
     } catch (error) {
       console.error('Failed to upload resume:', error);
       alert(`Failed to upload resume: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -105,9 +134,11 @@ export default function Resumes() {
   };
 
   // Set primary resume
-  const setPrimaryResume = async (resumeId: number) => {
+  const setPrimaryResume = async (resumeId: number | undefined) => {
+    if (!resumeId) return;
+    
     try {
-      await window.electronAPI.resumes.setPrimary(resumeId);
+      await resumesAPI.update(resumeId, { is_primary: true });
       await loadResumes();
     } catch (error) {
       console.error('Failed to set primary resume:', error);
@@ -115,11 +146,12 @@ export default function Resumes() {
   };
 
   // Delete resume
-  const deleteResume = async (resumeId: number) => {
+  const deleteResume = async (resumeId: number | undefined) => {
+    if (!resumeId) return;
     if (!confirm('Are you sure you want to delete this resume?')) return;
 
     try {
-      await window.electronAPI.resumes.delete(resumeId);
+      await resumesAPI.delete(resumeId);
       await loadResumes();
     } catch (error) {
       console.error('Failed to delete resume:', error);

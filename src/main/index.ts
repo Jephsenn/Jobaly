@@ -12,7 +12,7 @@ import { ResumeTailoring } from './services/ResumeTailoring';
 import { CoverLetterGenerator } from './services/CoverLetterGenerator';
 import { DocumentGenerator } from './services/DocumentGenerator';
 import { AutoUpdaterService } from './services/AutoUpdater';
-import type { Job } from '@shared/types';
+import type { Job } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
 let autoUpdaterService: AutoUpdaterService | null = null;
