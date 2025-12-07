@@ -281,15 +281,19 @@ function parseWorkExperience(text: string): WorkExperience[] {
     
     const titleCompanyMatch = line.match(titleCompanyPattern);
     const dateMatch = line.match(datePattern);
-    const isBulletStart = /^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line);
+    
+    // Bullet detection: actual bullet chars OR lines starting with action verbs (resume bullet points)
+    const hasBulletChar = /^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line);
+    const startsWithActionVerb = /^(provide|support|develop|manage|lead|maintain|handle|create|implement|design|build|deploy|resolve|administer|enhance|cut|played|supervised|delivered)/i.test(line);
+    const isBulletStart = hasBulletChar || (currentExperience && startsWithActionVerb);
     
     if (isBulletStart) {
-      console.log('  🎯 Detected bullet start!');
+      console.log('  🎯 Detected bullet start!', hasBulletChar ? '(char)' : '(verb)');
     }
     
     // Check if this is a standalone company name (capitalized, not a bullet, no dates)
     const isStandaloneCompany = !isBulletStart && !dateMatch && line.length < 60 && 
-                                /^[A-Z]/.test(line) && !/^(provide|support|develop|manage|lead|maintain|handle|create)/i.test(line);
+                                /^[A-Z]/.test(line) && !startsWithActionVerb;
     
     if (titleCompanyMatch) {
       // Save any pending bullet
