@@ -267,19 +267,33 @@ function calculateTitleMatch(
   
   // Check if current title matches job title
   if (resumeTitle && jobTitle) {
-    const titleWords = new Set(resumeTitle.split(/\s+/));
-    const jobWords = new Set(jobTitle.split(/\s+/));
+    const titleWords = new Set(resumeTitle.split(/\s+/).filter(w => w.length > 2));
+    const jobWords = new Set(jobTitle.split(/\s+/).filter(w => w.length > 2));
     
     // Calculate word overlap
     let matches = 0;
     titleWords.forEach(word => {
-      if (jobWords.has(word) && word.length > 2) { // Ignore short words
+      if (jobWords.has(word)) {
         matches++;
       }
     });
     
+    // Check for semantic similarity (e.g., "engineer" and "specialist" in same domain)
+    const domainWords = ['help', 'desk', 'support', 'technical', 'system', 'network', 'software', 'web', 'data', 'cloud'];
+    let domainMatches = 0;
+    domainWords.forEach(domain => {
+      if (resumeTitle.includes(domain) && jobTitle.includes(domain)) {
+        domainMatches++;
+      }
+    });
+    
+    // If 2+ domain words match (e.g., "help desk"), consider it a strong match even if role differs
+    if (domainMatches >= 2) {
+      return { score: 85, similarity: 'Same domain, similar role' };
+    }
+    
     const totalUniqueWords = new Set([...titleWords, ...jobWords]).size;
-    const overlapPercent = (matches / totalUniqueWords) * 100;
+    const overlapPercent = totalUniqueWords > 0 ? (matches / totalUniqueWords) * 100 : 0;
     
     if (overlapPercent >= 50) {
       return { score: 90, similarity: 'Very similar title' };

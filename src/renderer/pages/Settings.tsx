@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { getAISettings, saveAISettings, testAIConnection, type AISettings } from '../../services/resumeEnhancer';
 import { getMatchScoreSettings, saveMatchScoreSettings, type MatchScoreSettings } from '../../services/matchScoreCalculator';
 import { dataAPI } from '../../services/database';
 
@@ -23,13 +22,10 @@ export default function Settings() {
     email: '',
     phone: ''
   });
-  const [aiSettings, setAiSettings] = useState<AISettings>(getAISettings());
   const [matchSettings, setMatchSettings] = useState<MatchScoreSettings>(getMatchScoreSettings());
   const [desiredTitlesInput, setDesiredTitlesInput] = useState('');
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [message, setMessage] = useState('');
-  const [showApiKey, setShowApiKey] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -57,14 +53,6 @@ export default function Settings() {
     });
   };
 
-  const handleAIChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value, type } = e.target;
-    setAiSettings({
-      ...aiSettings,
-      [name]: type === 'checkbox' ? (e.target as HTMLInputElement).checked : value
-    });
-  };
-
   const handleSave = async () => {
     setSaving(true);
     setMessage('');
@@ -81,7 +69,6 @@ export default function Settings() {
       };
       
       localStorage.setItem('jobaly_user_settings', JSON.stringify(settings));
-      saveAISettings(aiSettings);
       saveMatchScoreSettings(updatedMatchSettings);
       setMatchSettings(updatedMatchSettings);
       
@@ -92,19 +79,6 @@ export default function Settings() {
       console.error('Failed to save settings:', error);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleTestConnection = async () => {
-    setTesting(true);
-    setMessage('');
-    try {
-      const success = await testAIConnection(aiSettings);
-      setMessage(success ? '✅ AI connection successful!' : '❌ AI connection failed. Please check your API key and settings.');
-    } catch (error) {
-      setMessage('❌ AI connection failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
-    } finally {
-      setTesting(false);
     }
   };
 
@@ -148,105 +122,6 @@ export default function Settings() {
           {message}
         </div>
       )}
-
-      {/* AI Configuration Section */}
-      <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-2">🤖 AI Resume Enhancement</h2>
-        <p className="text-gray-600 mb-6">
-          Configure AI to automatically enhance your resume bullet points and tailor them to specific jobs.
-        </p>
-
-        <div className="space-y-4">
-          <div>
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                name="enabled"
-                checked={aiSettings.enabled}
-                onChange={handleAIChange}
-                className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span className="ml-2 text-sm font-medium text-gray-900">
-                Enable AI-powered resume enhancement
-              </span>
-            </label>
-          </div>
-
-          {aiSettings.enabled && (
-            <>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  AI Provider
-                </label>
-                <select
-                  name="provider"
-                  value={aiSettings.provider}
-                  onChange={handleAIChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="openai">OpenAI (GPT-4o-mini)</option>
-                  <option value="anthropic">Anthropic (Claude 3.5 Sonnet)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  API Key
-                </label>
-                <div className="relative">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    name="apiKey"
-                    value={aiSettings.apiKey || ''}
-                    onChange={handleAIChange}
-                    className="w-full px-3 py-2 pr-20 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder={aiSettings.provider === 'openai' ? 'sk-...' : 'sk-ant-...'}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey(!showApiKey)}
-                    className="absolute right-2 top-1/2 transform -translate-y-1/2 text-sm text-gray-500 hover:text-gray-700"
-                  >
-                    {showApiKey ? '👁️ Hide' : '👁️ Show'}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">
-                  {aiSettings.provider === 'openai' 
-                    ? 'Get your API key from platform.openai.com'
-                    : 'Get your API key from console.anthropic.com'}
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Model (Optional)
-                </label>
-                <input
-                  type="text"
-                  name="model"
-                  value={aiSettings.model || ''}
-                  onChange={handleAIChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder={aiSettings.provider === 'openai' ? 'gpt-4o-mini' : 'claude-3-5-sonnet-20241022'}
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Leave blank to use the default model
-                </p>
-              </div>
-
-              <div>
-                <button
-                  onClick={handleTestConnection}
-                  disabled={testing || !aiSettings.apiKey}
-                  className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-                >
-                  {testing ? 'Testing...' : '🔌 Test Connection'}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
 
       {/* Job Matching Preferences Section */}
       <div className="bg-white rounded-lg shadow-md p-6 mb-6">
@@ -421,6 +296,46 @@ export default function Settings() {
           </button>
         </div>
       </div>
+
+      {/* Development Settings (only show in development) */}
+      {(window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-lg shadow-md p-6 mb-6">
+          <h2 className="text-xl font-semibold mb-2">🔧 Development Settings</h2>
+          <p className="text-gray-700 mb-4">
+            These settings only appear in development mode (localhost).
+          </p>
+
+          <div className="bg-white p-4 rounded border border-amber-200">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              OpenAI API Key (Development Only)
+            </label>
+            <input
+              type="password"
+              value={localStorage.getItem('jobaly_dev_openai_key') || ''}
+              onChange={(e) => {
+                if (e.target.value) {
+                  localStorage.setItem('jobaly_dev_openai_key', e.target.value);
+                  setMessage('✅ Development API key saved! Refresh to use.');
+                } else {
+                  localStorage.removeItem('jobaly_dev_openai_key');
+                  setMessage('✅ Development API key removed!');
+                }
+                setTimeout(() => setMessage(''), 3000);
+              }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 font-mono text-sm"
+              placeholder="sk-proj-..."
+            />
+            <p className="text-xs text-gray-600 mt-2">
+              ⚠️ <strong>Development only!</strong> This allows AI features to work without deploying to Vercel.
+              <br />
+              In production, the API key is stored securely on the server.
+            </p>
+            <p className="text-xs text-blue-600 mt-2">
+              💡 Get your key from: <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" className="underline">platform.openai.com/api-keys</a>
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Data Management Section */}
       <div className="bg-white rounded-lg shadow-md p-6">

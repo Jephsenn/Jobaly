@@ -21,6 +21,15 @@ export interface Job {
   platform: string;
   is_saved: boolean;
   created_at: string;
+  has_generated_materials?: boolean; // Flag to indicate if materials have been generated
+}
+
+// Generated materials for a job application
+export interface GeneratedMaterials {
+  id?: number;
+  job_id: number;
+  enhanced_resume: any; // EnhancedResume object from resumeEnhancer
+  generated_at: string;
 }
 
 // Resume structure for storing parsed content with formatting
@@ -57,6 +66,15 @@ export interface WorkExperience {
   bulletPoints: string[];
 }
 
+export interface EducationEntry {
+  school: string;
+  degree: string; // e.g., "Bachelor's", "Master's", "Associate's", "PhD"
+  field?: string; // e.g., "Computer Science", "Business Administration"
+  graduationDate?: string; // e.g., "May 2023", "2023"
+  gpa?: string; // e.g., "3.8", "3.8/4.0"
+  location?: string; // e.g., "Boston, MA"
+}
+
 export interface Resume {
   id?: number;
   name: string;
@@ -70,6 +88,7 @@ export interface Resume {
   // Parsed structure (for AI enhancement)
   sections?: ResumeSection[];
   work_experiences?: WorkExperience[];
+  education_entries?: EducationEntry[];
   
   // Extracted metadata
   hard_skills?: string;
@@ -77,7 +96,7 @@ export interface Resume {
   tools_technologies?: string;
   years_of_experience?: number;
   current_title?: string;
-  education?: string;
+  education?: string; // Legacy field for backward compatibility
   certifications?: string;
   work_experience?: string;
   
@@ -107,6 +126,7 @@ export class JobalyDB extends Dexie {
   jobs!: Table<Job, number>;
   resumes!: Table<Resume, number>;
   applications!: Table<Application, number>;
+  generated_materials!: Table<GeneratedMaterials, number>;
 
   constructor() {
     super('JobalyDB');
@@ -115,6 +135,14 @@ export class JobalyDB extends Dexie {
       jobs: '++id, title, company_name, platform, is_saved, created_at',
       resumes: '++id, name, is_primary, created_at',
       applications: '++id, job_id, resume_id, status, applied_date, created_at'
+    });
+    
+    // Version 2: Add generated_materials table
+    this.version(2).stores({
+      jobs: '++id, title, company_name, platform, is_saved, created_at, has_generated_materials',
+      resumes: '++id, name, is_primary, created_at',
+      applications: '++id, job_id, resume_id, status, applied_date, created_at',
+      generated_materials: '++id, job_id, generated_at'
     });
   }
 }
@@ -241,6 +269,58 @@ export const applicationsAPI = {
 
   async delete(id: number) {
     return await db.applications.delete(id);
+  }
+};
+
+// Generated Materials API
+export const generatedMaterialsAPI = {
+  async save(jobId: number, enhancedResume: any) {
+    // Check if materials already exist for this job
+    const existing = await db.generated_materials
+      .where('job_id')
+      .equals(jobId)
+      .first();
+    
+    const materials: GeneratedMaterials = {
+      job_id: jobId,
+      enhanced_resume: enhancedResume,
+      generated_at: new Date().toISOString()
+    };
+    
+    if (existing) {
+      // Update existing materials
+      await db.generated_materials.update(existing.id!, {
+        enhanced_resume: enhancedResume,
+        generated_at: new Date().toISOString()
+      });
+      await db.jobs.update(jobId, { has_generated_materials: true });
+      return existing.id;
+    } else {
+      // Create new materials
+      const id = await db.generated_materials.add(materials);
+      await db.jobs.update(jobId, { has_generated_materials: true });
+      return id;
+    }
+  },
+
+  async getByJobId(jobId: number) {
+    return await db.generated_materials
+      .where('job_id')
+      .equals(jobId)
+      .first();
+  },
+
+  async delete(jobId: number) {
+    const materials = await this.getByJobId(jobId);
+    if (materials?.id) {
+      await db.generated_materials.delete(materials.id);
+      await db.jobs.update(jobId, { has_generated_materials: false });
+    }
+  },
+
+  async exists(jobId: number): Promise<boolean> {
+    const materials = await this.getByJobId(jobId);
+    return !!materials;
   }
 };
 

@@ -6,6 +6,8 @@
 import { jobsAPI } from './database';
 
 let isListening = false;
+const recentJobIds = new Set<string>();
+const DEDUPE_WINDOW_MS = 3000; // Ignore duplicate job IDs within 3 seconds
 
 export function initExtensionListener() {
   if (isListening) return;
@@ -20,7 +22,24 @@ export function initExtensionListener() {
     const message = event.data;
     
     if (message.type === 'JOBALY_JOB_DETECTED') {
+      const jobId = message.job?.id || message.job?.url;
+      
+      // Deduplicate: ignore if we just received this job
+      if (jobId && recentJobIds.has(jobId)) {
+        console.log('⏭️ Skipping duplicate job (received within 3s):', jobId);
+        return;
+      }
+      
       console.log('📋 Job received from extension:', message.job);
+      
+      // Add to recent jobs set
+      if (jobId) {
+        recentJobIds.add(jobId);
+        // Remove from set after dedupe window expires
+        setTimeout(() => {
+          recentJobIds.delete(jobId);
+        }, DEDUPE_WINDOW_MS);
+      }
       
       try {
         await handleJobFromExtension(message.job);

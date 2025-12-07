@@ -1,11 +1,12 @@
 import mammoth from 'mammoth';
-import type { ResumeSection, ResumeBulletPoint, WorkExperience } from './database';
+import type { ResumeSection, ResumeBulletPoint, WorkExperience, EducationEntry } from './database';
 
 export interface ParsedDOCX {
   fullText: string;
   html: string;
   sections: ResumeSection[];
   workExperiences: WorkExperience[];
+  education: EducationEntry[];
   skills: string[];
   email?: string;
   phone?: string;
@@ -34,13 +35,49 @@ export async function parseDOCXResume(file: File): Promise<ParsedDOCX> {
     
     // Extract plain text
     const textResult = await mammoth.extractRawText({ arrayBuffer });
-    const fullText = textResult.value;
+    let fullText = textResult.value;
     const html = htmlResult.value;
+    
+    // Extract headers for contact info that might be in document headers
+    try {
+      const { default: PizZip } = await import('pizzip');
+      const zip = new PizZip(arrayBuffer);
+      
+      // Try to extract header content
+      const headerFiles = ['word/header1.xml', 'word/header2.xml', 'word/header3.xml'];
+      for (const headerFile of headerFiles) {
+        try {
+          const headerXml = zip.file(headerFile)?.asText();
+          if (headerXml) {
+            // Extract text content from XML (simple approach - strips XML tags)
+            const headerText = headerXml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            console.log('📋 Extracted header text:', headerText);
+            // Prepend header text to fullText so contact info is searchable
+            fullText = headerText + '\n' + fullText;
+          }
+        } catch (e) {
+          // Header file doesn't exist, continue
+        }
+      }
+    } catch (error) {
+      console.warn('⚠️ Could not extract headers:', error);
+    }
     
     // Parse the text into structured data
     const sections = parseSections(html, fullText);
-    const workExperiences = parseWorkExperience(fullText);
+    let workExperiences = parseWorkExperience(fullText);
+    
+    // If no work experiences found or they look malformed, try AI parsing
+    const hasValidExperiences = workExperiences.length > 0 && 
+                                 workExperiences.some(exp => exp.bulletPoints && exp.bulletPoints.length > 0);
+    
+    if (!hasValidExperiences) {
+      console.log('⚠️ Traditional parser found no valid experiences, will try AI parsing later...');
+      // Don't call AI here - will be called when user uploads resume
+    }
+    
     const skills = parseSkills(fullText);
+    const education = parseEducation(fullText);
     const contactInfo = parseContactInfo(fullText);
     
     return {
@@ -48,6 +85,7 @@ export async function parseDOCXResume(file: File): Promise<ParsedDOCX> {
       html,
       sections,
       workExperiences,
+      education,
       skills,
       ...contactInfo
     };
@@ -186,20 +224,35 @@ function parseWorkExperience(text: string): WorkExperience[] {
   const experiences: WorkExperience[] = [];
   const lines = text.split('\n');
   
+  console.log('🔍 Parsing work experience from text:', text.substring(0, 200) + '...');
+  
+  // Multiple patterns to try
   const titleCompanyPattern = /^(.+?)\s+(?:at|@|\||–|—)\s+(.+?)(?:\s*[,|\(]|$)/i;
+  const companyTitlePattern = /^(.+?)\s+[-–—]\s+(.+?)$/i;  // Company - Job Title
   const datePattern = /(\d{4}|\w{3,9}\s+\d{4})\s*[-–—to]*\s*(present|current|\d{4}|\w{3,9}\s+\d{4})?/i;
   
   let currentExperience: Partial<WorkExperience> | null = null;
   let bulletPoints: string[] = [];
+  let currentBullet: string[] = []; // Collect multi-line bullet text
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     
+    console.log(`  Line ${i}: "${line.substring(0, 80)}"`);
+    
     const titleCompanyMatch = line.match(titleCompanyPattern);
+    const companyTitleMatch = line.match(companyTitlePattern);
     const dateMatch = line.match(datePattern);
+    const isBulletStart = /^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line);
     
     if (titleCompanyMatch) {
+      // Save any pending bullet
+      if (currentBullet.length > 0) {
+        bulletPoints.push(currentBullet.join(' '));
+        currentBullet = [];
+      }
+      
       if (currentExperience && currentExperience.title && currentExperience.company) {
         experiences.push({
           ...currentExperience,
@@ -222,9 +275,22 @@ function parseWorkExperience(text: string): WorkExperience[] {
       currentExperience.startDate = dateMatch[1];
       currentExperience.endDate = dateMatch[2] || undefined;
       currentExperience.current = /present|current/i.test(dateMatch[2] || '');
-    } else if (/^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line) && currentExperience) {
-      bulletPoints.push(line.replace(/^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/, '').trim());
+    } else if (isBulletStart && currentExperience) {
+      // Save previous bullet if exists
+      if (currentBullet.length > 0) {
+        bulletPoints.push(currentBullet.join(' '));
+      }
+      // Start new bullet
+      currentBullet = [line.replace(/^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/, '').trim()];
+    } else if (currentBullet.length > 0 && currentExperience && !titleCompanyMatch && !dateMatch) {
+      // Continue multi-line bullet (not a new section header or date)
+      currentBullet.push(line);
     }
+  }
+  
+  // Save any pending bullet
+  if (currentBullet.length > 0) {
+    bulletPoints.push(currentBullet.join(' '));
   }
   
   if (currentExperience && currentExperience.title && currentExperience.company) {
@@ -238,36 +304,209 @@ function parseWorkExperience(text: string): WorkExperience[] {
 }
 
 /**
- * Extract skills from resume text
+ * Extract skills from resume text - parse actual skills section
  */
 function parseSkills(text: string): string[] {
-  const skills: Set<string> = new Set();
+  const skills: string[] = [];
+  const lines = text.split('\n');
   
-  const commonSkills = [
-    // Programming languages
-    'JavaScript', 'TypeScript', 'Python', 'Java', 'C++', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Go', 'Rust',
-    // Web technologies
-    'React', 'Angular', 'Vue', 'Node.js', 'Express', 'HTML', 'CSS', 'SASS', 'Tailwind',
-    // Databases
-    'SQL', 'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'DynamoDB',
-    // Cloud & DevOps
-    'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Jenkins', 'CI/CD', 'Git',
-    // Other tools
-    'Figma', 'Photoshop', 'Excel', 'Tableau', 'PowerBI'
-  ];
+  console.log('🔧 Parsing skills from text');
   
-  const lowerText = text.toLowerCase();
+  // Find skills section start
+  let skillsStartIndex = -1;
+  let skillsEndIndex = -1;
   
-  for (const skill of commonSkills) {
-    // Escape special regex characters in skill name
-    const escapedSkill = skill.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`\\b${escapedSkill}\\b`, 'i');
-    if (pattern.test(lowerText)) {
-      skills.add(skill);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Check if we're entering the technical skills section (main header)
+    if (/^technical\s+skills$/i.test(line)) {
+      skillsStartIndex = i + 1;
+      console.log('  📍 Found Technical Skills section at line', i);
+      continue;
+    }
+    
+    // If we're past the skills section start, look for the end
+    if (skillsStartIndex !== -1 && skillsEndIndex === -1) {
+      // Exit skills section if we hit another major section (Experience, Education, etc.)
+      if (/^(experience|education|certifications|projects|summary|professional\s+experience|work\s+history)$/i.test(line)) {
+        skillsEndIndex = i;
+        console.log('  📍 Skills section ends at line', i);
+        break;
+      }
     }
   }
   
-  return Array.from(skills);
+  // If we found a skills section, parse all lines within it
+  if (skillsStartIndex !== -1) {
+    const skillsLines = skillsEndIndex !== -1 
+      ? lines.slice(skillsStartIndex, skillsEndIndex)
+      : lines.slice(skillsStartIndex);
+    
+    console.log('  📝 Skills section lines:', skillsLines.length);
+    
+    for (const line of skillsLines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      
+      // Skip lines that are bullet points (work experience section)
+      if (/^[•●○■□▪▫\-\*]/.test(trimmed)) continue;
+      
+      // Check if line is a category with colon (e.g., "Languages & Scripting: Java, Python, ...")
+      const categoryMatch = trimmed.match(/^([^:]+):\s*(.+)$/);
+      
+      if (categoryMatch) {
+        const categoryName = categoryMatch[1].trim();
+        const skillsText = categoryMatch[2].trim();
+        
+        console.log(`  📂 Processing category: "${categoryName}"`);
+        
+        // Split by commas and clean up
+        const extractedSkills = skillsText
+          .split(',')
+          .map(s => s.trim())
+          .filter(s => s.length > 0 && s.length < 100); // Allow longer skill names
+        
+        skills.push(...extractedSkills);
+        console.log(`  ✅ Found ${extractedSkills.length} skills:`, extractedSkills);
+      } else if (trimmed.length > 0 && trimmed.length < 200) {
+        // Might be a continuation line or standalone skills
+        // Only process if it looks like a list of skills (contains commas or is short)
+        if (trimmed.includes(',')) {
+          const extractedSkills = trimmed
+            .split(',')
+            .map(s => s.trim())
+            .filter(s => s.length > 0 && s.length < 100 && !/^(and|or|&|\d+)$/i.test(s));
+          
+          if (extractedSkills.length > 0) {
+            skills.push(...extractedSkills);
+            console.log('  ✅ Found additional skills:', extractedSkills);
+          }
+        }
+      }
+    }
+  }
+  
+  // Remove duplicates while preserving order
+  const uniqueSkills = [...new Set(skills)];
+  
+  console.log(`  🎯 Total unique skills parsed: ${uniqueSkills.length}`);
+  return uniqueSkills;
+}
+
+/**
+ * Parse education entries - simplified to handle structured resume format
+ */
+function parseEducation(text: string): EducationEntry[] {
+  const education: EducationEntry[] = [];
+  const lines = text.split('\n');
+  
+  console.log('🎓 Parsing education from text');
+  
+  // Find education section boundaries
+  let educationStart = -1;
+  let educationEnd = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Find education section header
+    if (/^education$/i.test(line)) {
+      educationStart = i + 1;
+      console.log('  📍 Found education section at line', i);
+      continue;
+    }
+    
+    // Find end of education section (next major section)
+    if (educationStart !== -1 && educationEnd === -1) {
+      if (/^(technical\s+skills|experience|skills|certifications|projects|summary|professional\s+experience)/i.test(line)) {
+        educationEnd = i;
+        console.log('  📍 Education section ends at line', i);
+        break;
+      }
+    }
+  }
+  
+  // If we found an education section, parse it
+  if (educationStart !== -1) {
+    const educationLines = educationEnd !== -1 
+      ? lines.slice(educationStart, educationEnd)
+      : lines.slice(educationStart);
+    
+    console.log('  📝 Education section lines:', educationLines.length);
+    
+    let currentSchool = '';
+    let currentDegree = '';
+    let currentField = '';
+    let currentDate = '';
+    let currentLocation = '';
+    
+    for (const line of educationLines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      
+      console.log('  Checking line:', trimmed);
+      
+      // Check if line looks like a school name (usually first, often longer, contains "University", "College", "Institute")
+      if (/university|college|institute|school|academy/i.test(trimmed)) {
+        // Save previous entry if exists
+        if (currentSchool && currentDegree) {
+          education.push({
+            school: currentSchool,
+            degree: currentDegree,
+            field: currentField || undefined,
+            graduationDate: currentDate || undefined,
+          });
+          console.log('  ✅ Saved education entry:', { school: currentSchool, degree: currentDegree });
+        }
+        
+        // Start new entry
+        currentSchool = trimmed;
+        currentDegree = '';
+        currentField = '';
+        currentDate = '';
+        currentLocation = '';
+      }
+      // Check for degree with field (e.g., "Bachelor of Science, Computer Science")
+      else if (/bachelor|master|associate|doctorate|ph\.?d|b\.?[sa]\.?|m\.?[sa]\.?|mba/i.test(trimmed)) {
+        currentDegree = trimmed;
+        
+        // Try to extract field from same line
+        const fieldMatch = trimmed.match(/,\s*(.+?)(?:\s*$|\s*\()/);
+        if (fieldMatch) {
+          currentField = fieldMatch[1].trim();
+        }
+      }
+      // Check for date patterns (may include location too)
+      else if (/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|\d{4})/i.test(trimmed)) {
+        const dateMatch = trimmed.match(/\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?\d{4}\b/i);
+        if (dateMatch) {
+          currentDate = dateMatch[0];
+        }
+        // Location might be on same line
+        if (!currentLocation && trimmed.includes(',')) {
+          const parts = trimmed.split(',');
+          if (parts.length >= 2) {
+            currentLocation = parts.slice(0, -1).join(',').trim();
+          }
+        }
+      }
+    }
+    
+    // Save last entry
+    if (currentSchool && currentDegree) {
+      education.push({
+        school: currentSchool,
+        degree: currentDegree,
+        field: currentField || undefined,
+        graduationDate: currentDate || undefined,
+      });
+      console.log('  ✅ Saved final education entry:', { school: currentSchool, degree: currentDegree });
+    }
+  }
+  
+  console.log(`  📚 Parsed ${education.length} education entries`);
+  return education;
 }
 
 /**

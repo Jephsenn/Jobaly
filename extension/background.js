@@ -4,7 +4,11 @@
  */
 
 let isEnabled = true;
-const WEB_APP_URL = 'http://localhost:3000'; // Change to production URL when deployed
+const WEB_APP_URLS = [
+  'http://localhost:3000',
+  'http://localhost:*',
+  'https://*.vercel.app'
+]; // Jobaly web app URLs
 
 // Load settings from storage
 chrome.storage.local.get(['enabled'], (result) => {
@@ -70,48 +74,65 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Send job to web app by posting message to all Jobaly tabs
 async function sendToWebApp(job) {
-  console.log('🔍 Looking for Jobaly tabs at:', WEB_APP_URL);
+  console.log('🔍 Looking for Jobaly tabs at:', WEB_APP_URLS);
   
-  // Find all tabs with the web app open
-  const tabs = await chrome.tabs.query({ url: `${WEB_APP_URL}/*` });
+  // Find all tabs with the web app open - check all possible URLs
+  let allTabs = [];
+  for (const url of WEB_APP_URLS) {
+    const tabs = await chrome.tabs.query({ url: `${url}/*` });
+    allTabs = allTabs.concat(tabs);
+  }
   
-  console.log(`📊 Found ${tabs.length} Jobaly tab(s)`);
+  console.log(`📊 Found ${allTabs.length} Jobaly tab(s)`);
   
-  if (tabs.length === 0) {
-    console.warn('⚠️ No Jobaly tabs found. Make sure http://localhost:3000 is open!');
+  if (allTabs.length === 0) {
+    console.warn('⚠️ No Jobaly tabs found. Make sure your Jobaly web app is open!');
     throw new Error('No Jobaly tabs open');
   }
   
-  // Send message to all web app tabs
-  let successCount = 0;
-  for (const tab of tabs) {
-    if (tab.id) {
-      try {
-        console.log(`📤 Sending to tab ${tab.id} (${tab.url})`);
-        await chrome.tabs.sendMessage(tab.id, {
-          type: 'JOB_DETECTED',
-          job: job
-        });
-        console.log(`✅ Sent to Jobaly tab ${tab.id}`);
-        successCount++;
-      } catch (error) {
-        console.error(`❌ Failed to send to tab ${tab.id}:`, error);
-      }
-    }
-  }
+  const tabs = allTabs;
   
-  if (successCount === 0) {
+  // Prefer sending to a single active Jobaly tab to avoid duplicates
+  // Find an active tab first
+  let targetTab = null;
+  try {
+    const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true, url: `${WEB_APP_URLS[0]}/*` });
+    if (activeTabs && activeTabs.length > 0) {
+      targetTab = activeTabs[0];
+    }
+  } catch (e) {
+    // ignore and fall back
+  }
+
+  // If no active tab in the primary URL, fall back to any matching tab
+  if (!targetTab) {
+    targetTab = tabs.find(t => t.id) || null;
+  }
+
+  if (!targetTab || !targetTab.id) {
+    throw new Error('Failed to find a Jobaly tab to send to');
+  }
+
+  try {
+    console.log(`📤 Sending JOB_DETECTED to single tab ${targetTab.id} (${targetTab.url})`);
+    await chrome.tabs.sendMessage(targetTab.id, { type: 'JOB_DETECTED', job: job });
+    console.log(`✅ Sent to Jobaly tab ${targetTab.id}`);
+    return { success: true };
+  } catch (error) {
+    console.error(`❌ Failed to send to tab ${targetTab.id}:`, error);
     throw new Error('Failed to send to any tabs');
   }
-  
-  return { success: true };
 }
 
 // Check if web app is open
 async function checkDesktopAppConnection() {
   try {
-    const tabs = await chrome.tabs.query({ url: `${WEB_APP_URL}/*` });
-    return tabs.length > 0;
+    let allTabs = [];
+    for (const url of WEB_APP_URLS) {
+      const tabs = await chrome.tabs.query({ url: `${url}/*` });
+      allTabs = allTabs.concat(tabs);
+    }
+    return allTabs.length > 0;
   } catch {
     return false;
   }

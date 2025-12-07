@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom';
 import type { Job } from '@services/database';
-import { jobsAPI, applicationsAPI, resumesAPI } from '@services/database';
+import { jobsAPI, applicationsAPI, resumesAPI, generatedMaterialsAPI } from '@services/database';
 import { enhanceResumeForJob, getAISettings } from '../../services/resumeEnhancer';
 import { generateResumeDocx } from '../../services/resumeGenerator';
 import { calculateMatchScore, getMatchScoreColor, type MatchScoreBreakdown } from '../../services/matchScoreCalculator';
@@ -116,6 +116,15 @@ const Dashboard: React.FC = () => {
   };
 
   const handleDismissJob = async (jobId: number) => {
+    // Check if job is saved before dismissing
+    const job = jobs.find(j => j.id === jobId);
+    if (job?.is_saved) {
+      const confirmed = window.confirm(
+        '⚠️ This job is saved!\n\nAre you sure you want to dismiss it? This action cannot be undone.'
+      );
+      if (!confirmed) return;
+    }
+    
     await jobsAPI.delete(jobId);
     loadJobs();
   };
@@ -133,6 +142,18 @@ const Dashboard: React.FC = () => {
 
   const handleEnhanceResume = async (job: Job) => {
     try {
+      // Confirm with user before generating (uses AI credits)
+      const confirmed = window.confirm(
+        `✨ Generate AI-Tailored Application Materials?\n\n` +
+        `This will create:\n` +
+        `• Tailored resume for ${job.company_name}\n` +
+        `• Custom cover letter\n` +
+        `• Optimized for: ${job.title}\n\n` +
+        `Note: This uses AI credits. Continue?`
+      );
+      
+      if (!confirmed) return;
+
       // Check if AI is enabled
       const aiSettings = getAISettings();
       if (!aiSettings.enabled) {
@@ -148,7 +169,7 @@ const Dashboard: React.FC = () => {
       }
 
       // Show loading state
-      const originalButtonText = 'Enhancing...';
+      alert('⏳ Generating tailored materials... This may take 10-20 seconds.');
       
       // Enhance resume for this job
       const enhanced = await enhanceResumeForJob(primaryResume, job);
@@ -174,8 +195,8 @@ const Dashboard: React.FC = () => {
           </p>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        {/* Stats Grid - 2x2 on smaller screens, 4 columns on large screens */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 lg:gap-6 mb-8">
           <StatCard
             title="Jobs Detected"
             value={stats.jobsDetected.toString()}
@@ -214,26 +235,9 @@ const Dashboard: React.FC = () => {
             <div className="text-center py-12">
               <div className="text-6xl mb-4">🔍</div>
               <h3 className="text-lg font-medium text-gray-900 mb-2">Welcome to Jobaly!</h3>
-              <p className="text-gray-600 mb-6 max-w-md mx-auto">
-                Your job search dashboard is empty. Let's get started!
+              <p className="text-gray-600 max-w-md mx-auto">
+                Your job search dashboard is empty. Start browsing job sites with the Jobaly browser extension installed, and jobs will automatically appear here!
               </p>
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-lg mx-auto mb-4">
-                <p className="text-sm text-blue-800 mb-3">
-                  <strong>🧪 Testing the app?</strong> Add sample data to explore:
-                </p>
-                <code className="block bg-white px-3 py-2 rounded border border-blue-300 text-xs text-blue-900 font-mono">
-                  await seedTestData()
-                </code>
-                <p className="text-xs text-blue-700 mt-2">
-                  Open browser console (F12) and paste the command above
-                </p>
-              </div>
-              <div className="bg-green-50 border border-green-200 rounded-lg p-4 max-w-lg mx-auto">
-                <p className="text-sm text-green-800">
-                  <strong>💡 Coming Soon:</strong> Browser extension integration will automatically 
-                  detect jobs as you browse LinkedIn, Indeed, and other platforms!
-                </p>
-              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -272,6 +276,9 @@ interface JobCardProps {
 const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onToggleBreakdown, onSave, onDismiss, onMarkApplied, onEnhanceResume }) => {
   const [showMaterials, setShowMaterials] = React.useState(false);
   const [materials, setMaterials] = React.useState<any>(null);
+  const [isGenerating, setIsGenerating] = React.useState(false);
+  const [generationProgress, setGenerationProgress] = React.useState({ step: '', percent: 0 });
+  const [generatedResume, setGeneratedResume] = React.useState<any>(null);
   const [applicationStatus, setApplicationStatus] = React.useState<string | null>(null);
   const [showDetails, setShowDetails] = React.useState(false);
   const [tooltipPosition, setTooltipPosition] = React.useState({ top: 0, left: 0, maxHeight: 0 });
@@ -292,7 +299,7 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showBreakdown, onToggleBreakdown]);
 
-  // Calculate tooltip position when shown - always below badge
+  // Calculate tooltip position when shown - intelligently position above or below
   React.useEffect(() => {
     if (!showBreakdown || !buttonRef.current) return;
 
@@ -302,16 +309,26 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
         const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
         const scrollLeft = window.pageXOffset || document.documentElement.scrollLeft;
         
+        // Get actual tooltip height if available, otherwise estimate
+        const tooltipHeight = breakdownRef.current?.offsetHeight || 550;
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const spaceAbove = rect.top;
+        
+        // Position above if not enough space below
+        const positionAbove = spaceBelow < tooltipHeight + 16 && spaceAbove > spaceBelow;
+        
         setTooltipPosition({
-          top: rect.bottom + scrollTop + 8,
+          top: positionAbove 
+            ? rect.top + scrollTop - Math.min(tooltipHeight, spaceAbove - 16) - 8  // Position above with actual height
+            : rect.bottom + scrollTop + 8,              // Position below
           left: Math.max(8, Math.min(rect.left + scrollLeft, window.innerWidth - 328)), // Keep within viewport (320px width + 8px margin)
-          maxHeight: 600 // Fixed reasonable height, let page scroll
+          maxHeight: positionAbove ? spaceAbove - 16 : spaceBelow - 16 // Constrain height to available space
         });
       }
     };
 
-    // Initial position
-    updatePosition();
+    // Initial position (with slight delay to let tooltip render)
+    setTimeout(updatePosition, 0);
 
     // Update position on scroll
     window.addEventListener('scroll', updatePosition, true); // Use capture phase to catch all scrolls
@@ -335,14 +352,102 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
     checkApplication();
   }, [job.id]);
 
-  const loadMaterials = async () => {
-    // TODO: AI-generated materials will be added in future update
-    alert('AI-generated resumes and cover letters coming soon!');
+  // Load existing generated materials if available
+  React.useEffect(() => {
+    const loadExistingMaterials = async () => {
+      if (!job.id) return;
+      const materials = await generatedMaterialsAPI.getByJobId(job.id);
+      if (materials) {
+        setGeneratedResume(materials.enhanced_resume);
+      }
+    };
+    loadExistingMaterials();
+  }, [job.id]);
+
+  const openMaterialsModal = async () => {
+    // Open modal - will show existing materials if already generated
+    setShowMaterials(true);
+    setIsGenerating(false);
   };
 
-  const handleRegenerateMaterials = async () => {
-    // TODO: AI-generated materials will be added in future update
-    alert('AI-generated materials regeneration coming soon!');
+  const handleGenerateMaterials = async () => {
+    try {
+      // Confirm with user before generating (uses AI credits)
+      const confirmed = window.confirm(
+        `✨ Generate AI-Tailored Application Materials?\n\n` +
+        `This will create:\n` +
+        `• Tailored resume for ${job.company_name}\n` +
+        `• Custom cover letter\n` +
+        `• Optimized for: ${job.title}\n\n` +
+        `Note: This uses AI credits. Continue?`
+      );
+      
+      if (!confirmed) return;
+
+      setIsGenerating(true);
+      setGenerationProgress({ step: 'Initializing...', percent: 5 });
+
+      // Check if AI is enabled
+      const aiSettings = getAISettings();
+      if (!aiSettings.enabled) {
+        alert('Please enable AI in Settings to use resume enhancement features.');
+        setIsGenerating(false);
+        return;
+      }
+
+      setGenerationProgress({ step: 'Loading resume...', percent: 15 });
+
+      // Get primary resume
+      const primaryResume = await resumesAPI.getPrimary();
+      if (!primaryResume) {
+        alert('Please upload a resume first in the Resumes page.');
+        setIsGenerating(false);
+        return;
+      }
+
+      setGenerationProgress({ step: 'Enhancing work experiences with AI...', percent: 30 });
+
+      // Enhance resume for this job - this takes the most time
+      const enhanced = await enhanceResumeForJob(primaryResume, job, (progress) => {
+        // Update progress during enhancement
+        setGenerationProgress({ 
+          step: progress.step || 'Enhancing work experiences...', 
+          percent: 30 + (progress.percent * 0.5) // 30% to 80%
+        });
+      });
+      
+      setGenerationProgress({ step: 'Saving materials...', percent: 90 });
+
+      // Save generated materials to database
+      if (job.id) {
+        await generatedMaterialsAPI.save(job.id, enhanced);
+      }
+      
+      setGeneratedResume(enhanced);
+      setGenerationProgress({ step: 'Complete!', percent: 100 });
+      
+      // Wait a moment before hiding progress
+      setTimeout(() => {
+        setIsGenerating(false);
+      }, 500);
+      
+      alert('✅ Materials generated successfully! You can now download them below.');
+    } catch (error) {
+      console.error('Failed to generate materials:', error);
+      alert(`❌ Error: ${error instanceof Error ? error.message : 'Failed to generate materials'}`);
+      setIsGenerating(false);
+    }
+  };
+
+  const handleDownloadResume = async () => {
+    if (!generatedResume) return;
+    try {
+      await generateResumeDocx(generatedResume);
+      alert('✅ Resume downloaded successfully!');
+    } catch (error) {
+      console.error('Failed to download resume:', error);
+      alert(`❌ Error: ${error instanceof Error ? error.message : 'Failed to download resume'}`);
+    }
   };
   const timeAgo = (date: Date | string) => {
     const detectedDate = typeof date === 'string' ? new Date(date) : date;
@@ -421,10 +526,11 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                 {showBreakdown && ReactDOM.createPortal(
                   <div 
                     ref={breakdownRef} 
-                    className="absolute w-80 bg-white border border-gray-300 rounded-lg shadow-xl p-4 z-50"
+                    className="absolute w-80 bg-white border border-gray-300 rounded-lg shadow-xl p-4 z-50 overflow-y-auto"
                     style={{ 
                       top: `${tooltipPosition.top}px`, 
-                      left: `${tooltipPosition.left}px`
+                      left: `${tooltipPosition.left}px`,
+                      maxHeight: `${tooltipPosition.maxHeight}px`
                     }}
                   >
                       <div className="flex items-center justify-between mb-3">
@@ -645,10 +751,10 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                 ✉️ Applied
               </span>
               <button
-                onClick={() => setShowDetails(!showDetails)}
-                className="px-2 py-2 border border-blue-300 text-blue-700 text-xs rounded-lg hover:bg-blue-50 transition-colors w-full"
+                onClick={onDismiss}
+                className="px-2 py-2 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50 transition-colors w-full"
               >
-                📄 Details
+                Dismiss
               </button>
             </>
           )}
@@ -658,11 +764,17 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                 ✓ Saved
               </span>
               <button
-                onClick={onEnhanceResume}
-                className="px-2 py-2 bg-purple-600 text-white text-xs rounded-lg hover:bg-purple-700 transition-colors w-full"
-                title="Generate AI-enhanced resume for this job"
+                onClick={openMaterialsModal}
+                className={`px-2 py-2 text-white text-xs rounded-lg transition-colors w-full ${
+                  job.has_generated_materials 
+                    ? 'bg-green-600 hover:bg-green-700' 
+                    : 'bg-purple-600 hover:bg-purple-700'
+                }`}
+                title={job.has_generated_materials 
+                  ? "View & download your generated materials" 
+                  : "Generate AI-tailored resume & cover letter for this job"}
               >
-                📝 Resume
+                {job.has_generated_materials ? '📄 Materials' : '✨ Generate'}
               </button>
               <button
                 onClick={onMarkApplied}
@@ -671,10 +783,10 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                 ✉️ Applied
               </button>
               <button
-                onClick={() => setShowDetails(!showDetails)}
-                className="px-2 py-2 border border-blue-300 text-blue-700 text-xs rounded-lg hover:bg-blue-50 transition-colors w-full"
+                onClick={onDismiss}
+                className="px-2 py-2 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50 transition-colors w-full"
               >
-                📄 Details
+                Dismiss
               </button>
             </>
           )}
@@ -682,12 +794,14 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
         </div>
       </div>
 
-      {/* Materials Modal */}
-      {showMaterials && materials && (
+      {/* Materials Generation Modal */}
+      {showMaterials && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
             <div className="p-6 border-b flex justify-between items-center">
-              <h2 className="text-2xl font-bold">Application Materials</h2>
+              <h2 className="text-2xl font-bold">
+                {generatedResume ? '✅ Application Materials Generated' : '✨ Generate Application Materials'}
+              </h2>
               <button
                 onClick={() => setShowMaterials(false)}
                 className="text-gray-500 hover:text-gray-700 text-2xl"
@@ -695,64 +809,276 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                 ×
               </button>
             </div>
+            
             <div className="p-6 overflow-y-auto flex-1">
-              <div className="space-y-6">
-                {/* Tailored Resume */}
-                <div>
-                  <h3 className="text-lg font-semibold mb-2 flex items-center gap-2">
-                    📄 Tailored Resume
-                    {materials.status === 'applied' && (
-                      <span className="text-sm text-green-600 font-normal">(Applied)</span>
-                    )}
-                  </h3>
-                  <pre className="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap font-mono border">
-                    {materials.tailored_resume}
-                  </pre>
+              {isGenerating ? (
+                // Progress Bar - During Generation
+                <div className="space-y-6">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+                    <h3 className="font-semibold text-blue-900 mb-4 text-center">
+                      ✨ Generating Your Application Materials
+                    </h3>
+                    
+                    {/* Progress Bar */}
+                    <div className="mb-4">
+                      <div className="flex justify-between text-sm text-gray-700 mb-2">
+                        <span>{generationProgress.step}</span>
+                        <span>{Math.round(generationProgress.percent)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                        <div 
+                          className="bg-gradient-to-r from-blue-500 to-purple-600 h-full rounded-full transition-all duration-500 ease-out"
+                          style={{ width: `${generationProgress.percent}%` }}
+                        />
+                      </div>
+                    </div>
+                    
+                    <p className="text-sm text-gray-600 text-center mt-4">
+                      Please wait while AI enhances your resume for this position...
+                    </p>
+                    
+                    {/* Animated Dots */}
+                    <div className="flex justify-center gap-2 mt-6">
+                      <div className="w-3 h-3 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                      <div className="w-3 h-3 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                      <div className="w-3 h-3 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <p className="text-sm text-yellow-800">
+                      💡 <strong>Tip:</strong> This may take 20-40 seconds depending on your resume length and API rate limits.
+                    </p>
+                  </div>
                 </div>
+              ) : !generatedResume ? (
+                // Preview Section - Before Generation
+                <div className="space-y-6">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h3 className="font-semibold text-blue-900 mb-2">📋 What will be generated:</h3>
+                    <ul className="space-y-2 text-blue-800">
+                      <li className="flex items-start gap-2">
+                        <span className="text-lg">📄</span>
+                        <div>
+                          <strong>Tailored Resume</strong>
+                          <p className="text-sm">AI-enhanced bullet points optimized for {job.title} at {job.company_name}</p>
+                        </div>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="text-lg">✉️</span>
+                        <div>
+                          <strong>Custom Cover Letter</strong>
+                          <p className="text-sm">Professional cover letter highlighting your relevant experience</p>
+                        </div>
+                      </li>
+                      <li className="flex items-start gap-2">
+                        <span className="text-lg">✨</span>
+                        <div>
+                          <strong>Formatting Preserved</strong>
+                          <p className="text-sm">Your original resume style and formatting maintained</p>
+                        </div>
+                      </li>
+                    </ul>
+                  </div>
 
-                {/* Cover Letter */}
-                <div>
-                  <h3 className="text-lg font-semibold mb-2">✉️ Cover Letter</h3>
-                  <pre className="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap font-serif border">
-                    {materials.cover_letter}
-                  </pre>
+                  {/* Sample Preview */}
+                  <div>
+                    <h3 className="text-lg font-semibold mb-3">📄 Sample Resume Preview</h3>
+                    <div className="bg-gray-50 p-4 rounded-lg border text-sm space-y-3">
+                      <div>
+                        <p className="font-semibold text-gray-900">Professional Summary</p>
+                        <p className="text-gray-600 italic mt-1">
+                          [AI will create a tailored summary highlighting your relevant skills and experience for this role]
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-semibold text-gray-900">Work Experience</p>
+                        <p className="text-gray-600 italic mt-1">
+                          • [Your experience bullets will be enhanced with strong action verbs]<br/>
+                          • [Quantifiable achievements will be emphasized]<br/>
+                          • [Keywords from the job description will be naturally incorporated]
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg font-semibold mb-3">✉️ Sample Cover Letter Preview</h3>
+                    <div className="bg-gray-50 p-4 rounded-lg border text-sm">
+                      <p className="text-gray-600 italic">
+                        [A professional cover letter will be generated that:<br/>
+                        • Introduces you and your interest in the role<br/>
+                        • Highlights 2-3 key relevant experiences<br/>
+                        • Explains why you're a great fit for {job.company_name}<br/>
+                        • Closes with a call to action]
+                      </p>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                // Generated Content - After Generation
+                <div className="space-y-6">
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <p className="text-green-800">
+                      ✅ Your application materials have been generated! Download them below to use in your application.
+                    </p>
+                  </div>
+
+                  {/* Resume Summary */}
+                  <div>
+                    <h3 className="text-lg font-semibold mb-3">📄 Tailored Resume</h3>
+                    
+                    {/* Professional Summary */}
+                    <div className="mb-4">
+                      <h4 className="font-medium text-gray-900 mb-2">✨ Professional Summary</h4>
+                      <div className="bg-gray-50 p-4 rounded-lg border text-sm">
+                        <p className="text-gray-700">
+                          {generatedResume.enhanced.tailored_summary || 'Professional summary generated'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Work Experience Changes */}
+                    <div>
+                      <h4 className="font-medium text-gray-900 mb-3">📝 Enhanced Work Experience</h4>
+                      <p className="text-sm text-gray-600 mb-4">
+                        {generatedResume.enhanced.work_experiences?.length || 0} experience sections enhanced with AI
+                      </p>
+                      
+                      {/* Show before/after for each experience */}
+                      <div className="space-y-6">
+                        {generatedResume.enhanced.work_experiences?.map((enhancedExp: any, expIndex: number) => {
+                          const originalExp = generatedResume.original.work_experiences?.[expIndex];
+                          if (!originalExp || !enhancedExp) return null;
+
+                          // Count how many bullets actually changed
+                          let changedCount = 0;
+                          const bulletComparisons = enhancedExp.bulletPoints.map((enhancedBullet: string, bulletIndex: number) => {
+                            const originalBullet = originalExp.bulletPoints?.[bulletIndex];
+                            const isChanged = originalBullet && enhancedBullet !== originalBullet;
+                            if (isChanged) changedCount++;
+                            return {
+                              original: originalBullet || '',
+                              enhanced: enhancedBullet,
+                              changed: isChanged
+                            };
+                          });
+
+                          return (
+                            <div key={expIndex} className="bg-white border border-gray-200 rounded-lg p-4">
+                              {/* Experience Header */}
+                              <div className="mb-3">
+                                <p className="font-semibold text-gray-900">{enhancedExp.company}</p>
+                                <p className="text-sm text-gray-600">{enhancedExp.title}</p>
+                                <div className="flex items-center gap-2 mt-1">
+                                  <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
+                                    {changedCount} bullet{changedCount !== 1 ? 's' : ''} enhanced
+                                  </span>
+                                  <span className="text-xs text-gray-500">
+                                    {bulletComparisons.length - changedCount} unchanged
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Bullet Points Comparison */}
+                              <div className="space-y-4">
+                                {bulletComparisons.map((comparison: any, bulletIndex: number) => (
+                                  <div key={bulletIndex} className="text-sm">
+                                    {comparison.changed ? (
+                                      <>
+                                        {/* Changed Bullet */}
+                                        <div className="mb-2">
+                                          <div className="flex items-start gap-2">
+                                            <span className="text-red-500 font-bold">−</span>
+                                            <p className="text-gray-500 line-through flex-1">{comparison.original}</p>
+                                          </div>
+                                        </div>
+                                        <div>
+                                          <div className="flex items-start gap-2">
+                                            <span className="text-green-600 font-bold">+</span>
+                                            <p className="text-green-700 font-medium flex-1">{comparison.enhanced}</p>
+                                          </div>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <>
+                                        {/* Unchanged Bullet */}
+                                        <div className="flex items-start gap-2 opacity-60">
+                                          <span className="text-gray-400">•</span>
+                                          <p className="text-gray-600 flex-1">{comparison.enhanced}</p>
+                                          <span className="text-xs text-gray-400 italic">unchanged</span>
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cover Letter Preview */}
+                  <div>
+                    <h3 className="text-lg font-semibold mb-2">✉️ Cover Letter</h3>
+                    <div className="bg-gray-50 p-4 rounded-lg border text-sm max-h-64 overflow-y-auto">
+                      <p className="text-gray-700 whitespace-pre-wrap">
+                        {generatedResume.enhanced.full_text || 'Cover letter generated successfully'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
+
+            {/* Footer Actions */}
             <div className="p-6 border-t bg-gray-50 flex justify-end gap-3">
-              {/* TODO: Enable once AI generation is implemented */}
-              <button
-                disabled
-                className="px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed"
-                title="AI generation coming soon"
-              >
-                ⬇️ Download Resume (Soon)
-              </button>
-              <button
-                disabled
-                className="px-4 py-2 bg-gray-300 text-gray-500 rounded-lg cursor-not-allowed"
-                title="AI generation coming soon"
-              >
-                ⬇️ Download Cover Letter (Soon)
-              </button>
-              <button
-                onClick={() => navigator.clipboard.writeText(materials.tailored_resume)}
-                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-white"
-              >
-                Copy Resume
-              </button>
-              <button
-                onClick={() => navigator.clipboard.writeText(materials.cover_letter)}
-                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-white"
-              >
-                Copy Cover Letter
-              </button>
-              <button
-                onClick={() => setShowMaterials(false)}
-                className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
-              >
-                Close
-              </button>
+              {!generatedResume ? (
+                // Before Generation
+                <>
+                  <button
+                    onClick={() => setShowMaterials(false)}
+                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleGenerateMaterials}
+                    disabled={isGenerating}
+                    className={`px-6 py-2 text-white rounded-lg transition-colors ${
+                      isGenerating 
+                        ? 'bg-purple-400 cursor-not-allowed' 
+                        : 'bg-purple-600 hover:bg-purple-700'
+                    }`}
+                  >
+                    {isGenerating ? '⏳ Generating...' : '✨ Generate Materials'}
+                  </button>
+                </>
+              ) : (
+                // After Generation
+                <>
+                  <button
+                    onClick={() => setShowMaterials(false)}
+                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-white"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={handleDownloadResume}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                  >
+                    ⬇️ Download Resume
+                  </button>
+                  <button
+                    onClick={handleDownloadResume}
+                    className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                  >
+                    ⬇️ Download Cover Letter
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

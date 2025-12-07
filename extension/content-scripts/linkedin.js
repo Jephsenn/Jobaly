@@ -3,34 +3,73 @@
  * Automatically extracts job data when user views a LinkedIn job posting
  */
 
+// Prevent multiple instances of this script
+if (window.jobalyLinkedInDetectorLoaded) {
+  console.log('⚠️ LinkedIn detector already loaded, skipping duplicate instance');
+} else {
+  window.jobalyLinkedInDetectorLoaded = true;
+
 (function() {
   'use strict';
   
+  console.log('🚀 Initializing LinkedIn job detector...');
+  
   let lastJobId = null;
   let captureTimeout = null;
+  let lastCapturedUrl = null; // Track last URL we captured from
+  let isProcessing = false; // Prevent concurrent processing
+  let captureCount = 0; // Track how many jobs we've captured
 
   // Wait for page to fully load
   function waitForJobData() {
+    const currentUrl = window.location.href;
+    const caller = new Error().stack.split('\n')[2].trim(); // Get caller info
+    
+    console.log('🔔 waitForJobData() called');
+    console.log('   URL:', currentUrl);
+    console.log('   Called from:', caller);
+    console.log('   lastCapturedUrl:', lastCapturedUrl);
+    console.log('   isProcessing:', isProcessing);
+    
+    // Check if we've already captured from this exact URL
+    if (lastCapturedUrl === currentUrl) {
+      console.log('⏭️ SKIP: Already captured job from this URL');
+      return;
+    }
+
+    // Check if we're already processing this URL
+    if (isProcessing) {
+      console.log('⏭️ SKIP: Already processing, skipping duplicate trigger');
+      return;
+    }
+
     // Clear any pending timeout
     if (captureTimeout) {
+      console.log('⚠️ Clearing existing timeout');
       clearTimeout(captureTimeout);
     }
 
-    console.log('LinkedIn: Waiting for job data to load...');
+    console.log('⏳ Setting 1-second timer for job data extraction...');
+    isProcessing = true; // Mark as processing
 
     // Wait 1 second for dynamic content to load
     captureTimeout = setTimeout(() => {
-      console.log('LinkedIn: Attempting to extract job data...');
+      console.log('⏰ Timer fired! Attempting to extract job data...');
       const jobData = extractJobData();
       if (jobData && jobData.id !== lastJobId) {
         lastJobId = jobData.id;
-        console.log('LinkedIn: Job data extracted successfully:', jobData);
+        lastCapturedUrl = currentUrl; // Remember this URL
+        console.log('✅ Job data extracted successfully');
         sendJobToBackground(jobData);
       } else if (!jobData) {
-        console.log('LinkedIn: Failed to extract job data');
+        console.log('❌ Failed to extract job data');
       } else {
-        console.log('LinkedIn: Job already captured:', jobData.id);
+        console.log('⏭️ Job already captured (ID match):', jobData.id);
       }
+      
+      // Reset processing flag after completion
+      isProcessing = false;
+      console.log('🏁 Processing complete, isProcessing reset to false');
     }, 1000);
   }
 
@@ -457,7 +496,18 @@
 
   // Send job data to background script
   function sendJobToBackground(jobData) {
-    console.log('LinkedIn: Sending job to background:', jobData.title);
+    captureCount++;
+    const timestamp = new Date().toISOString();
+    
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log(`📤 SENDING JOB #${captureCount} at ${timestamp}`);
+    console.log('   Job ID:', jobData.id);
+    console.log('   Title:', jobData.title);
+    console.log('   URL:', window.location.href);
+    console.log('   lastJobId:', lastJobId);
+    console.log('   lastCapturedUrl:', lastCapturedUrl);
+    console.log('   isProcessing:', isProcessing);
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     chrome.runtime.sendMessage(
       { type: 'JOB_DETECTED', job: jobData },
@@ -465,7 +515,7 @@
         if (chrome.runtime.lastError) {
           console.error('LinkedIn: Error sending job:', chrome.runtime.lastError);
         } else {
-          console.log('LinkedIn: Job sent successfully:', response);
+          console.log('✅ Job sent successfully:', response);
           showCaptureNotification();
         }
       }
@@ -514,21 +564,33 @@
 
   // Detect when user navigates to a new job
   let lastUrl = window.location.href;
+  let urlChangeTimeout = null;
+  
   const observer = new MutationObserver(() => {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
       console.log('LinkedIn: URL changed to:', lastUrl);
       
-      // Check if it's a job page by URL or by presence of job elements
-      const isJobPage = window.location.href.includes('/jobs/view/') || 
-                        window.location.href.includes('currentJobId=') ||
-                        document.querySelector('.jobs-details') !== null ||
-                        document.querySelector('[data-job-id]') !== null;
+      // Reset processing flag when URL changes
+      isProcessing = false;
       
-      if (isJobPage) {
-        console.log('LinkedIn: Detected as job page');
-        waitForJobData();
+      // Debounce URL changes to prevent duplicate captures
+      if (urlChangeTimeout) {
+        clearTimeout(urlChangeTimeout);
       }
+      
+      urlChangeTimeout = setTimeout(() => {
+        // Check if it's a job page by URL or by presence of job elements
+        const isJobPage = window.location.href.includes('/jobs/view/') || 
+                          window.location.href.includes('currentJobId=') ||
+                          document.querySelector('.jobs-details') !== null ||
+                          document.querySelector('[data-job-id]') !== null;
+        
+        if (isJobPage) {
+          console.log('LinkedIn: Detected as job page');
+          waitForJobData();
+        }
+      }, 300); // Wait 300ms for URL to stabilize
     }
   });
 
@@ -550,3 +612,5 @@
 
   console.log('✅ LinkedIn job detector active');
 })();
+
+} // End if (!window.jobalyLinkedInDetectorLoaded)
