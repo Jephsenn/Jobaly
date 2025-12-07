@@ -176,10 +176,22 @@ Return ONLY the enhanced bullet points in the same numbered format (1., 2., etc.
       }
     }
 
-    // If parsing failed or count mismatch, return original
+    // Handle count mismatch: use what we got, keep rest unchanged
     if (enhanced.length !== bulletPoints.length) {
-      console.warn(`⚠️ Batch response parse failed (expected ${bulletPoints.length}, got ${enhanced.length}), returning originals`);
-      return bulletPoints;
+      console.warn(`⚠️ Batch response count mismatch (expected ${bulletPoints.length}, got ${enhanced.length})`);
+      
+      if (enhanced.length === 0) {
+        console.warn('   No bullets parsed, returning all originals');
+        return bulletPoints;
+      }
+      
+      // Use enhanced bullets we got, fill rest with originals
+      const result: string[] = [];
+      for (let i = 0; i < bulletPoints.length; i++) {
+        result.push(enhanced[i] || bulletPoints[i]);
+      }
+      console.warn(`   Using ${enhanced.length} enhanced, ${bulletPoints.length - enhanced.length} original`);
+      return result;
     }
 
     return enhanced;
