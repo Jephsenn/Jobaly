@@ -226,25 +226,64 @@ function parseWorkExperience(text: string): WorkExperience[] {
   
   console.log('🔍 Parsing work experience from text:', text.substring(0, 200) + '...');
   
+  // Find the Experience section
+  let inExperienceSection = false;
+  let experienceSectionEnd = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/^experience$/i.test(line) || /^work\s+experience$/i.test(line) || /^professional\s+experience$/i.test(line)) {
+      inExperienceSection = true;
+      console.log('  📍 Found Experience section at line', i);
+      continue;
+    }
+    if (inExperienceSection && /^(education|skills|projects|certifications|relevant\s+projects)$/i.test(line)) {
+      experienceSectionEnd = i;
+      console.log('  📍 Experience section ends at line', i);
+      break;
+    }
+  }
+  
+  if (!inExperienceSection) {
+    console.log('  ⚠️ No Experience section found');
+    return [];
+  }
+  
   // Multiple patterns to try
   const titleCompanyPattern = /^(.+?)\s+(?:at|@|\||–|—)\s+(.+?)(?:\s*[,|\(]|$)/i;
-  const companyTitlePattern = /^(.+?)\s+[-–—]\s+(.+?)$/i;  // Company - Job Title
   const datePattern = /(\d{4}|\w{3,9}\s+\d{4})\s*[-–—to]*\s*(present|current|\d{4}|\w{3,9}\s+\d{4})?/i;
   
   let currentExperience: Partial<WorkExperience> | null = null;
   let bulletPoints: string[] = [];
   let currentBullet: string[] = []; // Collect multi-line bullet text
+  let potentialCompany: string | null = null; // Store company name if found on its own line
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     
+    // Skip lines before experience section
+    if (!inExperienceSection) {
+      if (/^experience$/i.test(line) || /^work\s+experience$/i.test(line)) {
+        inExperienceSection = true;
+      }
+      continue;
+    }
+    
+    // Stop at next major section
+    if (experienceSectionEnd !== -1 && i >= experienceSectionEnd) {
+      break;
+    }
+    
     console.log(`  Line ${i}: "${line.substring(0, 80)}"`);
     
     const titleCompanyMatch = line.match(titleCompanyPattern);
-    const companyTitleMatch = line.match(companyTitlePattern);
     const dateMatch = line.match(datePattern);
     const isBulletStart = /^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line);
+    
+    // Check if this is a standalone company name (capitalized, not a bullet, no dates)
+    const isStandaloneCompany = !isBulletStart && !dateMatch && line.length < 60 && 
+                                /^[A-Z]/.test(line) && !/^(provide|support|develop|manage|lead|maintain|handle|create)/i.test(line);
     
     if (titleCompanyMatch) {
       // Save any pending bullet
@@ -265,12 +304,46 @@ function parseWorkExperience(text: string): WorkExperience[] {
         company: titleCompanyMatch[2].trim()
       };
       bulletPoints = [];
+      potentialCompany = null;
       
       if (dateMatch) {
         currentExperience.startDate = dateMatch[1];
         currentExperience.endDate = dateMatch[2] || undefined;
         currentExperience.current = /present|current/i.test(dateMatch[2] || '');
       }
+    } else if (isStandaloneCompany && !currentExperience) {
+      // This might be a company name on its own line
+      potentialCompany = line;
+      console.log('  🏢 Potential company:', potentialCompany);
+    } else if (potentialCompany && dateMatch) {
+      // Line with date after company name - this is likely the job title
+      // Save previous experience if exists
+      if (currentBullet.length > 0) {
+        bulletPoints.push(currentBullet.join(' '));
+        currentBullet = [];
+      }
+      
+      if (currentExperience && currentExperience.title && currentExperience.company) {
+        experiences.push({
+          ...currentExperience,
+          bulletPoints
+        } as WorkExperience);
+      }
+      
+      // Extract title (everything before the date)
+      const titleMatch = line.match(/^(.+?)\s+(\d{4}|\w{3,9}\s+\d{4})/i);
+      const title = titleMatch ? titleMatch[1].trim() : line.replace(dateMatch[0], '').trim();
+      
+      currentExperience = {
+        title: title,
+        company: potentialCompany,
+        startDate: dateMatch[1],
+        endDate: dateMatch[2] || undefined,
+        current: /present|current/i.test(dateMatch[2] || '')
+      };
+      bulletPoints = [];
+      potentialCompany = null;
+      console.log('  ✅ Created experience:', currentExperience);
     } else if (dateMatch && currentExperience) {
       currentExperience.startDate = dateMatch[1];
       currentExperience.endDate = dateMatch[2] || undefined;
@@ -282,7 +355,7 @@ function parseWorkExperience(text: string): WorkExperience[] {
       }
       // Start new bullet
       currentBullet = [line.replace(/^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/, '').trim()];
-    } else if (currentBullet.length > 0 && currentExperience && !titleCompanyMatch && !dateMatch) {
+    } else if (currentBullet.length > 0 && currentExperience && !titleCompanyMatch && !dateMatch && !isStandaloneCompany) {
       // Continue multi-line bullet (not a new section header or date)
       currentBullet.push(line);
     }

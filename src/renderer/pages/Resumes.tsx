@@ -88,29 +88,15 @@ export default function Resumes() {
         
         setUploadProgress({ step: 'Parsing work experiences...', percent: 60 });
         
-        // Check if traditional parsing found valid work experiences
-        const hasValidExperiences = parsed.workExperiences.length > 0 && 
-                                     parsed.workExperiences.some(exp => exp.bulletPoints && exp.bulletPoints.length > 0);
-        
         let workExperiences = parsed.workExperiences;
         
-        // If no valid experiences, try AI parsing
-        if (!hasValidExperiences) {
-          console.log('🤖 Traditional parsing found no valid experiences, trying AI...');
-          setUploadProgress({ step: 'Using AI to parse work experiences...', percent: 70 });
-          try {
-            const { parseWorkExperiencesWithAI } = await import('../../services/resumeEnhancer');
-            const aiParsedExperiences = await parseWorkExperiencesWithAI(parsed.fullText);
-            
-            if (aiParsedExperiences.length > 0) {
-              console.log(`✅ AI parsed ${aiParsedExperiences.length} work experiences!`);
-              workExperiences = aiParsedExperiences;
-            } else {
-              console.warn('⚠️ AI parsing also returned no experiences');
-            }
-          } catch (error) {
-            console.error('AI parsing failed:', error);
-          }
+        // Log what we found
+        if (workExperiences.length > 0) {
+          console.log(`✅ Parsed ${workExperiences.length} work experience(s)`);
+          const totalBullets = workExperiences.reduce((sum, exp) => sum + (exp.bulletPoints?.length || 0), 0);
+          console.log(`📝 Total bullet points: ${totalBullets}`);
+        } else {
+          console.warn('⚠️ No work experiences found in resume');
         }
         
         setUploadProgress({ step: 'Extracting education and skills...', percent: 80 });
@@ -351,6 +337,7 @@ export default function Resumes() {
                       <>
                         {/* Skills - Show first */}
                         {resume.hard_skills && (
+                          {resume.hard_skills && (
                           <div className="mb-3">
                             <p className="text-sm font-medium text-gray-700 mb-2">🎯 Skills:</p>
                             <div className="flex flex-wrap gap-1">
@@ -364,7 +351,7 @@ export default function Resumes() {
                               ))}
                             </div>
                           </div>
-                        )}
+                          )}
 
                         {/* Work Experience - Show job titles */}
                         {resume.work_experiences && resume.work_experiences.length > 0 && (
