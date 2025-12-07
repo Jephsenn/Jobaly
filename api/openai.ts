@@ -32,8 +32,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       console.error('OPENAI_API_KEY not configured in environment');
+      console.error('Available env vars:', Object.keys(process.env).filter(k => k.includes('OPENAI')));
       return res.status(500).json({ error: 'API key not configured' });
     }
+    
+    console.log('✅ API key found, length:', apiKey.length);
 
     // Call OpenAI API
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
