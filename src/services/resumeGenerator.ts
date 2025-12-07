@@ -6,11 +6,12 @@ import type { EnhancedResume } from './resumeEnhancer';
 
 /**
  * Generate a DOCX file from enhanced resume data, preserving original formatting
+ * Returns status of bullet point updates (only for DOCX modification path)
  */
 export async function generateResumeDocx(
   enhancedResume: EnhancedResume,
   filename?: string
-): Promise<void> {
+): Promise<BulletUpdateStatus[]> {
   const { original, enhanced, job } = enhancedResume;
   
   // If we have the original DOCX file, modify it directly to preserve ALL formatting
@@ -20,21 +21,32 @@ export async function generateResumeDocx(
   
   // If original has sections with formatting, use those as template
   if (original.sections && original.sections.length > 0) {
-    return generateFromTemplate(enhancedResume, filename);
+    await generateFromTemplate(enhancedResume, filename);
+    return []; // Template generation doesn't track individual bullet updates
   }
   
   // Fallback to simple generation if no sections available
-  return generateSimple(enhancedResume, filename);
+  await generateSimple(enhancedResume, filename);
+  return []; // Simple generation doesn't track individual bullet updates
+}
+
+export interface BulletUpdateStatus {
+  bulletIndex: number;
+  aiEnhanced: boolean;  // Was the bullet enhanced by AI?
+  docxUpdated: boolean; // Was it successfully found and updated in DOCX XML?
+  originalText: string;
+  enhancedText: string;
 }
 
 /**
  * Modify the original DOCX file directly, preserving 100% of formatting
  * Only replaces bullet point text
+ * Returns status of each bullet update
  */
 async function modifyOriginalDocx(
   enhancedResume: EnhancedResume,
   filename?: string
-): Promise<void> {
+): Promise<BulletUpdateStatus[]> {
   const { original, enhanced, job } = enhancedResume;
   
   try {
@@ -71,6 +83,7 @@ async function modifyOriginalDocx(
     
     let enhancedBulletIndex = 0;
     const originalBullets = extractBulletsFromSections(original.sections || []);
+    const updateStatuses: BulletUpdateStatus[] = [];
     
     // Log changes for debugging
     console.group('🎨 Resume Enhancement Changes');
@@ -81,12 +94,13 @@ async function modifyOriginalDocx(
     for (let i = 0; i < originalBullets.length && i < allEnhancedBullets.length; i++) {
       const originalText = originalBullets[i];
       const enhancedText = allEnhancedBullets[i];
+      const aiEnhanced = originalText !== enhancedText;
       
       // Log the change
       console.log(`\n📌 Bullet ${i + 1}:`);
       console.log(`   BEFORE: "${originalText}"`);
       console.log(`   AFTER:  "${enhancedText}"`);
-      console.log(`   Changed: ${originalText !== enhancedText ? '✅ Yes' : '❌ No (AI returned same text)'}`);
+      console.log(`   Changed: ${aiEnhanced ? '✅ Yes' : '❌ No (AI returned same text)'}`);
       
       // Escape XML special characters
       const escapedOriginal = escapeXml(originalText);
@@ -112,9 +126,19 @@ async function modifyOriginalDocx(
       );
       
       // Verify replacement worked
-      if (beforeReplace === xmlContent && originalText !== enhancedText) {
+      const docxUpdated = beforeReplace !== xmlContent || !aiEnhanced;
+      if (!docxUpdated && aiEnhanced) {
         console.warn(`   ⚠️ Warning: Text not found in XML. May need manual review.`);
       }
+      
+      // Track status
+      updateStatuses.push({
+        bulletIndex: i,
+        aiEnhanced,
+        docxUpdated,
+        originalText,
+        enhancedText
+      });
     }
     
     console.log('\n---');
@@ -134,13 +158,18 @@ async function modifyOriginalDocx(
     const defaultFilename = filename || `${job?.company_name || 'Resume'}_${job?.title?.replace(/[^a-z0-9]/gi, '_') || 'Enhanced'}.docx`;
     saveAs(modifiedDocx, defaultFilename);
     
+    return updateStatuses;
+    
   } catch (error) {
     console.error('Failed to modify original DOCX, falling back to template generation:', error);
     // Fallback to template generation if direct modification fails
     if (original.sections && original.sections.length > 0) {
-      return generateFromTemplate(enhancedResume, filename);
+      await generateFromTemplate(enhancedResume, filename);
+    } else {
+      await generateSimple(enhancedResume, filename);
     }
-    return generateSimple(enhancedResume, filename);
+    // Return empty status on fallback
+    return [];
   }
 }
 
@@ -540,4 +569,316 @@ export function downloadTextResume(enhancedResume: EnhancedResume, filename?: st
     : 'resume_enhanced.txt';
   
   saveAs(blob, filename || defaultFilename);
+}
+
+/**
+ * Extract person's name from resume (not filename)
+ */
+function extractPersonName(resume: Resume): string {
+  // PRIORITY 0: Check user settings first
+  try {
+    const userSettings = localStorage.getItem('jobaly_user_settings');
+    if (userSettings) {
+      const parsed = JSON.parse(userSettings);
+      if (parsed.name && parsed.name.trim().length > 0) {
+        return parsed.name.trim();
+      }
+    }
+  } catch (error) {
+    // Continue to other methods if settings not available
+  }
+  
+  // PRIORITY 1: Try to get name from full_text (usually at the very top)
+  if (resume.full_text) {
+    const lines = resume.full_text.split('\n');
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+      const line = lines[i].trim();
+      // Look for a name-like line: 2-4 words, no special chars, no numbers (except maybe middle initial)
+      if (line.length > 0 && 
+          line.length < 50 &&
+          !line.includes('@') && 
+          !line.match(/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/) && // No phone numbers
+          !line.toLowerCase().includes('linkedin') &&
+          !line.toLowerCase().includes('http') &&
+          !line.toLowerCase().includes('resume') &&
+          !line.toLowerCase().includes('.com') &&
+          /^[A-Z][a-z]+(\s+[A-Z]\.?)?\s+[A-Z][a-z]+$/.test(line)) { // Name pattern: "First Last" or "First M Last"
+        return line;
+      }
+    }
+  }
+  
+  // PRIORITY 2: Try to get name from the first section (usually header)
+  if (resume.sections && resume.sections.length > 0) {
+    const headerSection = resume.sections[0]; // First section is usually the header
+    if (headerSection && headerSection.content) {
+      const lines = headerSection.content.split('\n');
+      for (const line of lines) {
+        const cleaned = line.trim();
+        if (cleaned.length > 0 && 
+            cleaned.length < 50 &&
+            !cleaned.includes('@') && 
+            !cleaned.match(/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/) &&
+            !cleaned.toLowerCase().includes('linkedin') &&
+            !cleaned.toLowerCase().includes('http') &&
+            /^[A-Z][a-z]+(\s+[A-Z]\.?)?\s+[A-Z][a-z]+$/.test(cleaned)) {
+          return cleaned;
+        }
+      }
+    }
+  }
+  
+  // PRIORITY 3: Try to extract from email with separators (e.g., john.josephsen@gmail.com -> John Josephsen)
+  if (resume.email) {
+    const emailName = resume.email.split('@')[0];
+    const parts = emailName.split(/[._-]/);
+    if (parts.length >= 2) {
+      return parts
+        .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join(' ');
+    }
+  }
+  
+  // PRIORITY 4: Ask user to add their name (better than showing filename)
+  return 'Your Name';
+}
+
+/**
+ * Generate a cover letter DOCX file
+ */
+export async function generateCoverLetterDocx(
+  enhancedResume: EnhancedResume,
+  filename?: string
+): Promise<void> {
+  const { enhanced, job, original } = enhancedResume;
+  
+  if (!enhanced.cover_letter) {
+    throw new Error('No cover letter found in enhanced resume');
+  }
+  
+  const coverLetterText = enhanced.cover_letter;
+  const today = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  const personName = extractPersonName(original);
+  
+  // Get user settings (prioritize over resume)
+  let userName = personName;
+  let userAddress = '';
+  let userCity = '';
+  let userState = '';
+  let userZip = '';
+  let userEmail = original.email;
+  let userPhone = original.phone;
+  let userLinkedIn = original.linkedin;
+  
+  try {
+    const userSettings = localStorage.getItem('jobaly_user_settings');
+    if (userSettings) {
+      const parsed = JSON.parse(userSettings);
+      if (parsed.name) userName = parsed.name;
+      if (parsed.address) userAddress = parsed.address;
+      if (parsed.city) userCity = parsed.city;
+      if (parsed.state) userState = parsed.state;
+      if (parsed.zip) userZip = parsed.zip;
+      if (parsed.email) userEmail = parsed.email;
+      if (parsed.phone) userPhone = parsed.phone;
+    }
+  } catch (error) {
+    // Use resume/extracted data if settings not available
+  }
+  
+  // Create document sections
+  const sections: Paragraph[] = [];
+  
+  // Add sender info (your contact info) - traditional business letter format
+  if (userName) {
+    sections.push(
+      new Paragraph({
+        text: userName,
+        spacing: { after: 0 }
+      })
+    );
+  }
+  
+  if (userAddress) {
+    sections.push(
+      new Paragraph({
+        text: userAddress,
+        spacing: { after: 0 }
+      })
+    );
+  }
+  
+  // City, State ZIP on one line
+  const cityStateZip: string[] = [];
+  if (userCity) cityStateZip.push(userCity);
+  if (userState) cityStateZip.push(userState);
+  const cityStateLine = cityStateZip.join(', ');
+  const fullCityLine = userZip ? `${cityStateLine} ${userZip}` : cityStateLine;
+  
+  if (fullCityLine) {
+    sections.push(
+      new Paragraph({
+        text: fullCityLine,
+        spacing: { after: 0 }
+      })
+    );
+  }
+  
+  // Email and phone on separate lines
+  if (userEmail) {
+    sections.push(
+      new Paragraph({
+        text: userEmail,
+        spacing: { after: 0 }
+      })
+    );
+  }
+  
+  if (userPhone) {
+    sections.push(
+      new Paragraph({
+        text: userPhone,
+        spacing: { after: userLinkedIn ? 0 : 240 }
+      })
+    );
+  }
+  
+  // LinkedIn if available
+  if (userLinkedIn) {
+    sections.push(
+      new Paragraph({
+        text: userLinkedIn,
+        spacing: { after: 240 }
+      })
+    );
+  }
+  
+  // Add date
+  sections.push(
+    new Paragraph({
+      text: today,
+      spacing: { after: 240 }
+    })
+  );
+  
+  // Add hiring manager address (if job has company info)
+  if (job && job.company_name) {
+    sections.push(
+      new Paragraph({
+        text: 'Hiring Manager',
+        spacing: { after: 0 }
+      }),
+      new Paragraph({
+        text: job.company_name,
+        spacing: { after: job.location ? 0 : 240 }
+      })
+    );
+    
+    if (job.location) {
+      sections.push(
+        new Paragraph({
+          text: job.location,
+          spacing: { after: 240 }
+        })
+      );
+    }
+  }
+  
+  // Add salutation
+  sections.push(
+    new Paragraph({
+      text: 'Dear Hiring Manager,',
+      spacing: { after: 240 }
+    })
+  );
+  
+  // Filter out placeholder lines first
+  const lines = coverLetterText.split('\n');
+  const filteredLines = lines.filter(line => {
+    const lower = line.toLowerCase().trim();
+    return !lower.startsWith('[') &&
+           !lower.includes('[your') &&
+           !lower.includes('[date') &&
+           !lower.includes('[city') &&
+           !lower.includes('[company') &&
+           !lower.includes('dear hiring manager') &&
+           !lower.includes('sincerely') &&
+           !lower.includes('best regards') &&
+           !lower.startsWith('hiring manager');
+  });
+  
+  // Split into paragraphs - handle both double newlines and preserve blank lines for splitting
+  const cleanedText = filteredLines.join('\n');
+  let paragraphs = cleanedText.split('\n\n').filter(p => p.trim().length > 0);
+  
+  // If we only got 1 paragraph, try splitting by single newlines to detect sentence-based paragraphs
+  if (paragraphs.length === 1) {
+    // Split into sentences and group every 3-4 sentences into a paragraph
+    const sentences = cleanedText.match(/[^.!?]+[.!?]+/g) || [cleanedText];
+    paragraphs = [];
+    let currentPara = '';
+    let sentenceCount = 0;
+    
+    for (const sentence of sentences) {
+      currentPara += sentence;
+      sentenceCount++;
+      
+      // Create a new paragraph every 3-4 sentences
+      if (sentenceCount >= 3 && currentPara.length > 200) {
+        paragraphs.push(currentPara.trim());
+        currentPara = '';
+        sentenceCount = 0;
+      }
+    }
+    
+    // Add remaining sentences as final paragraph
+    if (currentPara.trim().length > 0) {
+      paragraphs.push(currentPara.trim());
+    }
+  }
+  
+  for (let i = 0; i < paragraphs.length; i++) {
+    const para = paragraphs[i].trim();
+    
+    // Additional safety check
+    if (para.toLowerCase().startsWith('[') || para.includes('[your')) {
+      continue;
+    }
+    
+    sections.push(
+      new Paragraph({
+        text: para,
+        spacing: { 
+          after: 240,  // Space between paragraphs
+          line: 276    // 1.15 line spacing within paragraphs
+        },
+        alignment: AlignmentType.LEFT
+      })
+    );
+  }
+  
+  // Add signature with reduced spacing
+  sections.push(
+    new Paragraph({
+      text: 'Sincerely,',
+      spacing: { after: 240 } // Reduced space between "Sincerely," and name
+    }),
+    new Paragraph({
+      text: userName,
+      spacing: { after: 0 }
+    })
+  );
+  
+  // Create document
+  const doc = new Document({
+    sections: [{
+      properties: {},
+      children: sections
+    }]
+  });
+  
+  // Generate and download
+  const blob = await Packer.toBlob(doc);
+  const defaultFilename = filename || `CoverLetter_${job?.company_name || 'Company'}_${job?.title?.replace(/[^a-z0-9]/gi, '_') || 'Position'}.docx`;
+  saveAs(blob, defaultFilename);
 }

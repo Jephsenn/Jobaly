@@ -1,4 +1,5 @@
 import type { Resume, WorkExperience, Job } from './database';
+import type { BulletUpdateStatus } from './resumeGenerator';
 
 export interface AISettings {
   provider: 'openai' | 'anthropic' | 'local';
@@ -13,8 +14,10 @@ export interface EnhancedResume {
     work_experiences: WorkExperience[];
     full_text: string;
     tailored_summary?: string;
+    cover_letter?: string; // AI-generated cover letter tailored to the job
   };
   job?: Job;
+  bulletUpdateStatuses?: BulletUpdateStatus[]; // Track which bullets were successfully updated in DOCX
 }
 
 /**
@@ -333,6 +336,122 @@ Professional Summary:`;
 }
 
 /**
+ * Generate a tailored cover letter for the job
+ */
+export async function generateCoverLetter(
+  resume: Resume,
+  enhancedWorkExperiences: WorkExperience[],
+  job: Job,
+  settings?: AISettings
+): Promise<string> {
+  const aiSettings = settings || getAISettings();
+  
+  if (!aiSettings.enabled) {
+    return generateFallbackCoverLetter(resume, job);
+  }
+  
+  // Get top 2-3 most relevant experiences
+  const topExperiences = enhancedWorkExperiences.slice(0, 3);
+  const experienceDetails = topExperiences.map(exp => 
+    `${exp.title} at ${exp.company}:\n${exp.bulletPoints.slice(0, 2).join('\n')}`
+  ).join('\n\n');
+  
+  const prompt = `Write a compelling, professional cover letter BODY ONLY (250-350 words) for this job application. 
+
+CANDIDATE INFORMATION:
+Name: ${resume.name || 'Candidate'}
+Current Title: ${resume.current_title || 'Professional'}
+Years of Experience: ${resume.years_of_experience || 'Several years'}
+Top Skills: ${resume.hard_skills?.split(',').slice(0, 5).join(', ') || 'Not specified'}
+
+RELEVANT EXPERIENCE:
+${experienceDetails}
+
+JOB DETAILS:
+Position: ${job.title}
+Company: ${job.company_name}
+Key Requirements: ${job.required_skills || 'Not specified'}
+Job Description: ${job.description.substring(0, 600)}...
+
+CRITICAL INSTRUCTIONS:
+- Write ONLY the body paragraphs - NO header information at all
+- Do NOT include: [Your Name], [Your Address], [City, State, Zip], [Your Email], [Your Phone Number], [Date], [Company Address], or ANY other bracketed placeholders
+- Do NOT write "Dear Hiring Manager" - I will add that separately
+- Do NOT write "Sincerely" or signature - I will add that separately  
+- Start immediately with the first paragraph of the letter body
+- Write in first person as the candidate
+- Open with a strong hook that shows genuine interest
+- Highlight 2-3 specific achievements that match job requirements
+- Show enthusiasm for the company and role
+- Include a call to action in the closing paragraph
+- Use a professional but approachable tone
+- Keep it concise (250-350 words)
+- Do NOT use generic phrases like "I am writing to apply"
+- Focus on value you can bring to the company
+
+EXAMPLE OF WHAT TO WRITE:
+"When I learned about the [Position] opportunity at [Company], I was immediately drawn to [specific aspect]. With [X years] of experience in [field], I have developed expertise in [relevant skills]..."
+
+DO NOT WRITE ANYTHING LIKE THIS:
+[Your Name]
+[Date]
+Dear Hiring Manager,
+
+Cover Letter Body (start with first paragraph immediately):`;
+  
+  try {
+    let retries = 0;
+    const maxRetries = 3;
+
+    while (retries < maxRetries) {
+      try {
+        if (aiSettings.provider === 'openai') {
+          return await callOpenAI(prompt, aiSettings, 'coverLetter');
+        } else if (aiSettings.provider === 'anthropic') {
+          return await callAnthropic(prompt, aiSettings);
+        } else {
+          return generateFallbackCoverLetter(resume, job);
+        }
+      } catch (error: any) {
+        // Check if it's a rate limit error
+        if (error.message?.includes('Rate limit') || error.message?.includes('429')) {
+          retries++;
+          if (retries >= maxRetries) {
+            console.warn('⚠️ Rate limit reached for cover letter, using fallback');
+            return generateFallbackCoverLetter(resume, job);
+          }
+          const delay = 20000 * retries;
+          console.log(`⏳ Rate limit hit on cover letter, waiting ${delay / 1000}s before retry ${retries}/${maxRetries}...`);
+          await sleep(delay);
+        } else {
+          throw error;
+        }
+      }
+    }
+    
+    return generateFallbackCoverLetter(resume, job);
+  } catch (error) {
+    console.error('Failed to generate cover letter:', error);
+    return generateFallbackCoverLetter(resume, job);
+  }
+}
+
+/**
+ * Generate a basic fallback cover letter without AI
+ */
+function generateFallbackCoverLetter(resume: Resume, job: Job): string {
+  return `I am writing to express my strong interest in the ${job.title} position at ${job.company_name}. With ${resume.years_of_experience || 'several years'} of experience as a ${resume.current_title || 'professional'}, I am confident that my skills and background make me an excellent fit for this role.
+
+${resume.work_experiences && resume.work_experiences.length > 0 
+  ? `In my current role as ${resume.work_experiences[0].title} at ${resume.work_experiences[0].company}, I have developed strong expertise in ${resume.hard_skills?.split(',').slice(0, 3).join(', ') || 'relevant areas'}. This experience has prepared me well for the challenges and opportunities that come with the ${job.title} position.` 
+  : 'Throughout my career, I have developed strong expertise in the key areas required for this position.'}
+
+I am particularly excited about the opportunity to contribute to ${job.company_name}'s continued success. My background in ${resume.hard_skills?.split(',').slice(0, 2).join(' and ') || 'the field'} aligns well with your requirements, and I am eager to bring my skills and experience to your team.
+
+Thank you for considering my application. I would welcome the opportunity to discuss how my qualifications align with your needs and to learn more about this exciting opportunity.`;
+}
+
+/**
  * Progress callback for resume enhancement
  */
 export type ProgressCallback = (progress: { step: string; percent: number }) => void;
@@ -401,11 +520,18 @@ export async function enhanceResumeForJob(
   }
   
   // Generate tailored summary
-  console.log('\nStep 2/2: Generating tailored summary...');
+  console.log('\nStep 2/3: Generating tailored summary...');
   onProgress?.({ step: 'Generating tailored summary...', percent: 85 });
   
   const tailoredSummary = await generateTailoredSummary(resume, job, aiSettings);
   console.log(`✅ Summary generated (${tailoredSummary.length} characters)\n`);
+  
+  // Generate cover letter
+  console.log('\nStep 3/3: Generating cover letter...');
+  onProgress?.({ step: 'Generating cover letter...', percent: 90 });
+  
+  const coverLetter = await generateCoverLetter(resume, enhancedWorkExperiences, job, aiSettings);
+  console.log(`✅ Cover letter generated (${coverLetter.length} characters)\n`);
   
   onProgress?.({ step: 'Finalizing...', percent: 95 });
   
@@ -458,7 +584,8 @@ export async function enhanceResumeForJob(
     enhanced: {
       work_experiences: enhancedWorkExperiences,
       full_text: enhancedText,
-      tailored_summary: tailoredSummary
+      tailored_summary: tailoredSummary,
+      cover_letter: coverLetter
     },
     job
   };
@@ -467,7 +594,15 @@ export async function enhanceResumeForJob(
 /**
  * Call OpenAI API directly (development only)
  */
-async function callOpenAIDirect(prompt: string, settings: AISettings, apiKey: string, isParsingTask: boolean = false): Promise<string> {
+async function callOpenAIDirect(prompt: string, settings: AISettings, apiKey: string, taskType: 'default' | 'parsing' | 'coverLetter' = 'default'): Promise<string> {
+  // Determine max tokens based on task type
+  const maxTokens = taskType === 'parsing' ? 2000 : taskType === 'coverLetter' ? 600 : 200;
+  const systemContent = taskType === 'parsing' 
+    ? 'You are a resume parser. Extract work experience data and return ONLY valid JSON with no additional text.'
+    : taskType === 'coverLetter'
+    ? 'You are a professional cover letter writer. Write compelling, personalized cover letters that highlight relevant achievements and show genuine interest in the role.'
+    : 'You are a professional resume writer and career coach. Provide CONCISE, impactful improvements to resume content. CRITICAL: Keep responses the same length or shorter than the original. Do not expand or add new information. Focus on better wording, quantifiable achievements, and strong action verbs.';
+    
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -479,9 +614,7 @@ async function callOpenAIDirect(prompt: string, settings: AISettings, apiKey: st
       messages: [
         {
           role: 'system',
-          content: isParsingTask 
-            ? 'You are a resume parser. Extract work experience data and return ONLY valid JSON with no additional text.'
-            : 'You are a professional resume writer and career coach. Provide CONCISE, impactful improvements to resume content. CRITICAL: Keep responses the same length or shorter than the original. Do not expand or add new information. Focus on better wording, quantifiable achievements, and strong action verbs.'
+          content: systemContent
         },
         {
           role: 'user',
@@ -489,7 +622,7 @@ async function callOpenAIDirect(prompt: string, settings: AISettings, apiKey: st
         }
       ],
       temperature: 0.7,
-      max_tokens: isParsingTask ? 2000 : 200  // More tokens for parsing tasks
+      max_tokens: maxTokens
     })
   });
   
@@ -505,17 +638,25 @@ async function callOpenAIDirect(prompt: string, settings: AISettings, apiKey: st
 /**
  * Call OpenAI API through secure proxy or direct (development only)
  */
-async function callOpenAI(prompt: string, settings: AISettings, isParsingTask: boolean = false): Promise<string> {
+async function callOpenAI(prompt: string, settings: AISettings, taskType: 'default' | 'parsing' | 'coverLetter' = 'default'): Promise<string> {
   // Check if we're in development
   const isDevelopment = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
   
   // Get API key from localStorage for development (NOT for production)
   const devApiKey = isDevelopment ? localStorage.getItem('jobaly_dev_openai_key') : null;
   
+  // Determine max tokens based on task type
+  const maxTokens = taskType === 'parsing' ? 2000 : taskType === 'coverLetter' ? 600 : 200;
+  const systemContent = taskType === 'parsing' 
+    ? 'You are a resume parser. Extract work experience data and return ONLY valid JSON with no additional text.'
+    : taskType === 'coverLetter'
+    ? 'You are a professional cover letter writer. Write compelling, personalized cover letters that highlight relevant achievements and show genuine interest in the role.'
+    : 'You are a professional resume writer and career coach. Provide CONCISE, impactful improvements to resume content. CRITICAL: Keep responses the same length or shorter than the original. Do not expand or add new information. Focus on better wording, quantifiable achievements, and strong action verbs.';
+  
   // If in development and have local key, use direct OpenAI API
   if (isDevelopment && devApiKey) {
     console.log('🔧 Development mode: Using direct OpenAI API');
-    return callOpenAIDirect(prompt, settings, devApiKey, isParsingTask);
+    return callOpenAIDirect(prompt, settings, devApiKey, taskType);
   }
   
   // Otherwise use secure proxy
@@ -532,9 +673,7 @@ async function callOpenAI(prompt: string, settings: AISettings, isParsingTask: b
       messages: [
         {
           role: 'system',
-          content: isParsingTask 
-            ? 'You are a resume parser. Extract work experience data and return ONLY valid JSON with no additional text.'
-            : 'You are a professional resume writer and career coach. Provide CONCISE, impactful improvements to resume content. CRITICAL: Keep responses the same length or shorter than the original. Do not expand or add new information. Focus on better wording, quantifiable achievements, and strong action verbs.'
+          content: systemContent
         },
         {
           role: 'user',
@@ -542,7 +681,7 @@ async function callOpenAI(prompt: string, settings: AISettings, isParsingTask: b
         }
       ],
       temperature: 0.7,
-      max_tokens: isParsingTask ? 2000 : 200  // More tokens for parsing tasks
+      max_tokens: maxTokens
     })
   });
   
@@ -649,9 +788,9 @@ ${truncatedText}
 JSON array:`;
 
   try {
-    // Pass isParsingTask=true to get more tokens and appropriate system message
+    // Pass taskType='parsing' to get more tokens and appropriate system message
     const response = aiSettings.provider === 'openai'
-      ? await callOpenAI(prompt, aiSettings, true)
+      ? await callOpenAI(prompt, aiSettings, 'parsing')
       : await callAnthropic(prompt, aiSettings);
     
     console.log('AI response:', response);

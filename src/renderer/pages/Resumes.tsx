@@ -415,7 +415,7 @@ export default function Resumes() {
                     ) : (
                       /* Non-Primary Resume: Show only skills */
                       <>
-                        {resume.hard_skills && (
+                        {resume.hard_skills && resume.hard_skills.trim() && (
                           <div className="mb-2">
                             <p className="text-sm font-medium text-gray-700 mb-1">Skills:</p>
                             <div className="flex flex-wrap gap-1">

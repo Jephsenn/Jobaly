@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import type { Job } from '@services/database';
 import { jobsAPI, applicationsAPI, resumesAPI, generatedMaterialsAPI } from '@services/database';
 import { enhanceResumeForJob, getAISettings } from '../../services/resumeEnhancer';
-import { generateResumeDocx } from '../../services/resumeGenerator';
+import { generateResumeDocx, generateCoverLetterDocx, type BulletUpdateStatus } from '../../services/resumeGenerator';
 import { calculateMatchScore, getMatchScoreColor, type MatchScoreBreakdown } from '../../services/matchScoreCalculator';
 
 const Dashboard: React.FC = () => {
@@ -282,6 +282,7 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
   const [applicationStatus, setApplicationStatus] = React.useState<string | null>(null);
   const [showDetails, setShowDetails] = React.useState(false);
   const [tooltipPosition, setTooltipPosition] = React.useState({ top: 0, left: 0, maxHeight: 0 });
+  const [expandedExperiences, setExpandedExperiences] = React.useState<Set<number>>(new Set());
   const breakdownRef = React.useRef<HTMLDivElement>(null);
   const buttonRef = React.useRef<HTMLButtonElement>(null);
 
@@ -442,13 +443,38 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
   const handleDownloadResume = async () => {
     if (!generatedResume) return;
     try {
-      await generateResumeDocx(generatedResume);
+      const updateStatuses = await generateResumeDocx(generatedResume);
+      
+      // Store the update statuses in the generated resume for display
+      const updatedResume = {
+        ...generatedResume,
+        bulletUpdateStatuses: updateStatuses
+      };
+      setGeneratedResume(updatedResume);
+      
+      // Save the update statuses to the database so they persist
+      if (job.id) {
+        await generatedMaterialsAPI.save(job.id, updatedResume);
+      }
+      
       alert('✅ Resume downloaded successfully!');
     } catch (error) {
       console.error('Failed to download resume:', error);
       alert(`❌ Error: ${error instanceof Error ? error.message : 'Failed to download resume'}`);
     }
   };
+
+  const handleDownloadCoverLetter = async () => {
+    if (!generatedResume) return;
+    try {
+      await generateCoverLetterDocx(generatedResume);
+      alert('✅ Cover letter downloaded successfully!');
+    } catch (error) {
+      console.error('Failed to download cover letter:', error);
+      alert(`❌ Error: ${error instanceof Error ? error.message : 'Failed to download cover letter'}`);
+    }
+  };
+
   const timeAgo = (date: Date | string) => {
     const detectedDate = typeof date === 'string' ? new Date(date) : date;
     const now = new Date().getTime();
@@ -947,75 +973,159 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                       
                       {/* Show before/after for each experience */}
                       <div className="space-y-6">
-                        {generatedResume.enhanced.work_experiences?.map((enhancedExp: any, expIndex: number) => {
-                          const originalExp = generatedResume.original.work_experiences?.[expIndex];
-                          if (!originalExp || !enhancedExp) return null;
+                        {(() => {
+                          let globalBulletIndex = 0;
+                          
+                          return generatedResume.enhanced.work_experiences?.map((enhancedExp: any, expIndex: number) => {
+                            const originalExp = generatedResume.original.work_experiences?.[expIndex];
+                            if (!originalExp || !enhancedExp) return null;
 
-                          // Count how many bullets actually changed
-                          let changedCount = 0;
-                          const bulletComparisons = enhancedExp.bulletPoints.map((enhancedBullet: string, bulletIndex: number) => {
-                            const originalBullet = originalExp.bulletPoints?.[bulletIndex];
-                            const isChanged = originalBullet && enhancedBullet !== originalBullet;
-                            if (isChanged) changedCount++;
-                            return {
-                              original: originalBullet || '',
-                              enhanced: enhancedBullet,
-                              changed: isChanged
-                            };
-                          });
+                            // Count status for this experience
+                            let enhancedAndInDocx = 0;
+                            let enhancedNotInDocx = 0;
+                            let unchangedCount = 0;
+                            
+                            const bulletComparisons = enhancedExp.bulletPoints.map((enhancedBullet: string, bulletIndex: number) => {
+                              const originalBullet = originalExp.bulletPoints?.[bulletIndex];
+                              const currentGlobalIndex = globalBulletIndex++;
+                              
+                              // Get status from bulletUpdateStatuses if available
+                              const updateStatus = generatedResume.bulletUpdateStatuses?.find(
+                                (s: BulletUpdateStatus) => s.bulletIndex === currentGlobalIndex
+                              );
+                              
+                              const aiEnhanced = updateStatus?.aiEnhanced ?? (originalBullet !== enhancedBullet);
+                              const docxUpdated = updateStatus?.docxUpdated ?? false;
+                              
+                              // Determine state
+                              let state: 'success' | 'warning' | 'unchanged';
+                              if (!aiEnhanced) {
+                                state = 'unchanged';
+                                unchangedCount++;
+                              } else if (docxUpdated) {
+                                state = 'success';
+                                enhancedAndInDocx++;
+                              } else {
+                                state = 'warning';
+                                enhancedNotInDocx++;
+                              }
+                              
+                              return {
+                                original: originalBullet || '',
+                                enhanced: enhancedBullet,
+                                state,
+                                aiEnhanced,
+                                docxUpdated
+                              };
+                            });
 
-                          return (
-                            <div key={expIndex} className="bg-white border border-gray-200 rounded-lg p-4">
-                              {/* Experience Header */}
-                              <div className="mb-3">
-                                <p className="font-semibold text-gray-900">{enhancedExp.company}</p>
-                                <p className="text-sm text-gray-600">{enhancedExp.title}</p>
-                                <div className="flex items-center gap-2 mt-1">
-                                  <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
-                                    {changedCount} bullet{changedCount !== 1 ? 's' : ''} enhanced
-                                  </span>
-                                  <span className="text-xs text-gray-500">
-                                    {bulletComparisons.length - changedCount} unchanged
-                                  </span>
-                                </div>
-                              </div>
+                            const isExpanded = expandedExperiences.has(expIndex);
+                            
+                            return (
+                              <div key={expIndex} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                                {/* Experience Header - Clickable */}
+                                <button
+                                  onClick={() => {
+                                    const newExpanded = new Set(expandedExperiences);
+                                    if (isExpanded) {
+                                      newExpanded.delete(expIndex);
+                                    } else {
+                                      newExpanded.add(expIndex);
+                                    }
+                                    setExpandedExperiences(newExpanded);
+                                  }}
+                                  className="w-full text-left p-4 hover:bg-gray-50 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="flex-1 min-w-0">
+                                      <p className="font-semibold text-gray-900">{enhancedExp.company}</p>
+                                      <p className="text-sm text-gray-600">{enhancedExp.title}</p>
+                                      <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                        {enhancedAndInDocx > 0 && (
+                                          <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full">
+                                            ✅ {enhancedAndInDocx} in DOCX
+                                          </span>
+                                        )}
+                                        {enhancedNotInDocx > 0 && (
+                                          <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
+                                            ⚠️ {enhancedNotInDocx} manual copy needed
+                                          </span>
+                                        )}
+                                        {unchangedCount > 0 && (
+                                          <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
+                                            {unchangedCount} unchanged
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <svg 
+                                      className={`w-5 h-5 text-gray-400 flex-shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                                      fill="none" 
+                                      stroke="currentColor" 
+                                      viewBox="0 0 24 24"
+                                    >
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  </div>
+                                </button>
 
-                              {/* Bullet Points Comparison */}
-                              <div className="space-y-4">
-                                {bulletComparisons.map((comparison: any, bulletIndex: number) => (
-                                  <div key={bulletIndex} className="text-sm">
-                                    {comparison.changed ? (
-                                      <>
-                                        {/* Changed Bullet */}
-                                        <div className="mb-2">
-                                          <div className="flex items-start gap-2">
+                                {/* Bullet Points Comparison - Collapsible */}
+                                {isExpanded && (
+                                  <div className="px-4 pb-4 space-y-4 border-t border-gray-100">
+                                  {bulletComparisons.map((comparison: any, bulletIndex: number) => (
+                                    <div key={bulletIndex} className="text-sm">
+                                      {comparison.state === 'success' ? (
+                                        // AI Enhanced AND in DOCX - Green
+                                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                                          <div className="flex items-start gap-2 mb-2">
                                             <span className="text-red-500 font-bold">−</span>
                                             <p className="text-gray-500 line-through flex-1">{comparison.original}</p>
                                           </div>
-                                        </div>
-                                        <div>
                                           <div className="flex items-start gap-2">
                                             <span className="text-green-600 font-bold">+</span>
-                                            <p className="text-green-700 font-medium flex-1">{comparison.enhanced}</p>
+                                            <div className="flex-1">
+                                              <p className="text-green-700 font-medium">{comparison.enhanced}</p>
+                                              <p className="text-xs text-green-600 mt-1">✅ Updated in downloaded file</p>
+                                            </div>
                                           </div>
                                         </div>
-                                      </>
-                                    ) : (
-                                      <>
-                                        {/* Unchanged Bullet */}
-                                        <div className="flex items-start gap-2 opacity-60">
-                                          <span className="text-gray-400">•</span>
-                                          <p className="text-gray-600 flex-1">{comparison.enhanced}</p>
-                                          <span className="text-xs text-gray-400 italic">unchanged</span>
+                                      ) : comparison.state === 'warning' ? (
+                                        // AI Enhanced but NOT in DOCX - Yellow
+                                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                                          <div className="flex items-start gap-2 mb-2">
+                                            <span className="text-red-500 font-bold">−</span>
+                                            <p className="text-gray-500 line-through flex-1">{comparison.original}</p>
+                                          </div>
+                                          <div className="flex items-start gap-2">
+                                            <span className="text-yellow-600 font-bold">+</span>
+                                            <div className="flex-1">
+                                              <p className="text-yellow-800 font-medium">{comparison.enhanced}</p>
+                                              <p className="text-xs text-yellow-700 mt-1">
+                                                ⚠️ <strong>Not in file</strong> - Copy this text manually to your resume
+                                              </p>
+                                            </div>
+                                          </div>
                                         </div>
-                                      </>
-                                    )}
+                                      ) : (
+                                        // Unchanged - Gray
+                                        <div className="bg-gray-50 border border-gray-200 rounded-lg p-3">
+                                          <div className="flex items-start gap-2 opacity-60">
+                                            <span className="text-gray-400">•</span>
+                                            <div className="flex-1">
+                                              <p className="text-gray-600">{comparison.enhanced}</p>
+                                              <p className="text-xs text-gray-400 mt-1 italic">No changes</p>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
                                   </div>
-                                ))}
+                                )}
                               </div>
-                            </div>
-                          );
-                        })}
+                            );
+                          });
+                        })()}
                       </div>
                     </div>
                   </div>
@@ -1023,10 +1133,179 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                   {/* Cover Letter Preview */}
                   <div>
                     <h3 className="text-lg font-semibold mb-2">✉️ Cover Letter</h3>
-                    <div className="bg-gray-50 p-4 rounded-lg border text-sm max-h-64 overflow-y-auto">
-                      <p className="text-gray-700 whitespace-pre-wrap">
-                        {generatedResume.enhanced.full_text || 'Cover letter generated successfully'}
-                      </p>
+                    <div className="bg-white p-6 rounded-lg border shadow-sm text-sm max-h-96 overflow-y-auto font-serif">
+                      {/* Sender Info (Your Contact Info) - Traditional Business Letter Format */}
+                      {(() => {
+                        // Get user settings and resume data
+                        const resume = generatedResume.original;
+                        let name = '';
+                        let address = '';
+                        let city = '';
+                        let state = '';
+                        let zip = '';
+                        let email = resume.email;
+                        let phone = resume.phone;
+                        const linkedin = resume.linkedin;
+                        
+                        // Extract name first
+                        try {
+                          const userSettings = localStorage.getItem('jobaly_user_settings');
+                          if (userSettings) {
+                            const parsed = JSON.parse(userSettings);
+                            if (parsed.name) name = parsed.name;
+                            if (parsed.address) address = parsed.address;
+                            if (parsed.city) city = parsed.city;
+                            if (parsed.state) state = parsed.state;
+                            if (parsed.zip) zip = parsed.zip;
+                            if (parsed.email) email = parsed.email;
+                            if (parsed.phone) phone = parsed.phone;
+                          }
+                        } catch (error) {
+                          // Use resume data if settings not available
+                        }
+                        
+                        // If no name from settings, extract from resume
+                        if (!name && resume.full_text) {
+                          const lines = resume.full_text.split('\n');
+                          for (let i = 0; i < Math.min(5, lines.length); i++) {
+                            const line = lines[i].trim();
+                            if (line.length > 0 && 
+                                line.length < 50 &&
+                                !line.includes('@') && 
+                                !line.match(/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/) &&
+                                !line.toLowerCase().includes('linkedin') &&
+                                !line.toLowerCase().includes('http') &&
+                                /^[A-Z][a-z]+(\s+[A-Z]\.?)?\s+[A-Z][a-z]+$/.test(line)) {
+                              name = line;
+                              break;
+                            }
+                          }
+                        }
+                        
+                        return (
+                          <div className="mb-4 text-gray-700">
+                            {name && <div>{name}</div>}
+                            {address && <div>{address}</div>}
+                            {(city || state || zip) && (
+                              <div>
+                                {[city, state].filter(Boolean).join(', ')}
+                                {zip && ` ${zip}`}
+                              </div>
+                            )}
+                            {email && <div>{email}</div>}
+                            {phone && <div>{phone}</div>}
+                            {linkedin && <div>{linkedin}</div>}
+                          </div>
+                        );
+                      })()}
+                      
+                      {/* Date - Always show */}
+                      <div className="mb-4 text-gray-700">
+                        {new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+                      </div>
+                      
+                      {/* Hiring Manager Address - Only show if we have company name */}
+                      {job.company_name && (
+                        <div className="mb-4 text-gray-700">
+                          <div>Hiring Manager</div>
+                          <div>{job.company_name}</div>
+                          {job.location && <div>{job.location}</div>}
+                        </div>
+                      )}
+                      
+                      {/* Salutation */}
+                      <div className="mb-4 text-gray-700">
+                        Dear Hiring Manager,
+                      </div>
+                      
+                      {/* Cover Letter Body */}
+                      <div className="text-gray-700 whitespace-pre-wrap mb-4 text-justify">
+                        {(() => {
+                          const coverLetter = generatedResume.enhanced.cover_letter || 'Cover letter generated successfully';
+                          
+                          // Filter out any placeholder lines that AI might have included
+                          const lines = coverLetter.split('\n');
+                          const filteredLines = lines.filter((line: string) => {
+                            const lower = line.toLowerCase().trim();
+                            return !lower.startsWith('[') &&
+                                   !lower.includes('[your') &&
+                                   !lower.includes('[date') &&
+                                   !lower.includes('[city') &&
+                                   !lower.includes('[company') &&
+                                   !lower.includes('dear hiring manager') &&
+                                   !lower.includes('sincerely') &&
+                                   !lower.includes('best regards') &&
+                                   !lower.startsWith('hiring manager');
+                          });
+                          
+                          return filteredLines.join('\n').trim();
+                        })()}
+                      </div>
+                      
+                      {/* Signature */}
+                      <div className="mt-4 text-gray-700">
+                        <div>Sincerely,</div>
+                        <div className="mt-1">
+                          {(() => {
+                            // Extract person's name (not filename)
+                            const resume = generatedResume.original;
+                            
+                            // PRIORITY 0: Check user settings first
+                            try {
+                              const userSettings = localStorage.getItem('jobaly_user_settings');
+                              if (userSettings) {
+                                const parsed = JSON.parse(userSettings);
+                                if (parsed.name && parsed.name.trim().length > 0) {
+                                  return parsed.name.trim();
+                                }
+                              }
+                            } catch (error) {
+                              // Continue to other methods
+                            }
+                            
+                            // PRIORITY 1: Try to get name from full_text (first few lines)
+                            if (resume.full_text) {
+                              const lines = resume.full_text.split('\n');
+                              for (let i = 0; i < Math.min(5, lines.length); i++) {
+                                const line = lines[i].trim();
+                                // Look for name pattern: "First Last" or "First M Last"
+                                if (line.length > 0 && 
+                                    line.length < 50 &&
+                                    !line.includes('@') && 
+                                    !line.match(/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/) &&
+                                    !line.toLowerCase().includes('linkedin') &&
+                                    !line.toLowerCase().includes('http') &&
+                                    !line.toLowerCase().includes('resume') &&
+                                    !line.toLowerCase().includes('.com') &&
+                                    /^[A-Z][a-z]+(\s+[A-Z]\.?)?\s+[A-Z][a-z]+$/.test(line)) {
+                                  return line;
+                                }
+                              }
+                            }
+                            
+                            // PRIORITY 2: Try email-based extraction (with separators)
+                            if (resume.email) {
+                              const emailName = resume.email.split('@')[0];
+                              const parts = emailName.split(/[._-]/);
+                              if (parts.length >= 2) {
+                                return parts
+                                  .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+                                  .join(' ');
+                              }
+                            }
+                            
+                            // PRIORITY 3: Better placeholder than filename
+                            return 'Your Name';
+                          })()}
+                        </div>
+                      </div>
+                      
+                      {/* Info message if missing data */}
+                      {(!generatedResume.original.email && !generatedResume.original.phone && !generatedResume.original.name) && (
+                        <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                          💡 <strong>Tip:</strong> Add your contact info (email, phone) and name to your resume for a complete cover letter header.
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1072,7 +1351,7 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
                     ⬇️ Download Resume
                   </button>
                   <button
-                    onClick={handleDownloadResume}
+                    onClick={handleDownloadCoverLetter}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
                   >
                     ⬇️ Download Cover Letter
