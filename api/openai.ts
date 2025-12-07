@@ -52,9 +52,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('OpenAI API error:', error);
+      console.error('OpenAI API error:', {
+        status: response.status,
+        statusText: response.statusText,
+        error: error
+      });
       return res.status(response.status).json({ 
-        error: `OpenAI API error: ${response.statusText}` 
+        error: `OpenAI API error: ${response.statusText}`,
+        details: error
       });
     }
 
