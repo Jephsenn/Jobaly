@@ -337,7 +337,6 @@ export default function Resumes() {
                       <>
                         {/* Skills - Show first */}
                         {resume.hard_skills && (
-                          {resume.hard_skills && (
                           <div className="mb-3">
                             <p className="text-sm font-medium text-gray-700 mb-2">🎯 Skills:</p>
                             <div className="flex flex-wrap gap-1">
@@ -351,7 +350,7 @@ export default function Resumes() {
                               ))}
                             </div>
                           </div>
-                          )}
+                        )}
 
                         {/* Work Experience - Show job titles */}
                         {resume.work_experiences && resume.work_experiences.length > 0 && (
