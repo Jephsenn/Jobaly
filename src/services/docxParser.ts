@@ -275,11 +275,17 @@ function parseWorkExperience(text: string): WorkExperience[] {
       break;
     }
     
-    console.log(`  Line ${i}: "${line.substring(0, 80)}"`);
+    // Show first few chars for debugging bullets
+    const firstChars = line.substring(0, 5).split('').map(c => c.charCodeAt(0)).join(',');
+    console.log(`  Line ${i}: "${line.substring(0, 80)}" [chars: ${firstChars}]`);
     
     const titleCompanyMatch = line.match(titleCompanyPattern);
     const dateMatch = line.match(datePattern);
     const isBulletStart = /^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line);
+    
+    if (isBulletStart) {
+      console.log('  🎯 Detected bullet start!');
+    }
     
     // Check if this is a standalone company name (capitalized, not a bullet, no dates)
     const isStandaloneCompany = !isBulletStart && !dateMatch && line.length < 60 && 
@@ -351,13 +357,18 @@ function parseWorkExperience(text: string): WorkExperience[] {
     } else if (isBulletStart && currentExperience) {
       // Save previous bullet if exists
       if (currentBullet.length > 0) {
-        bulletPoints.push(currentBullet.join(' '));
+        const completeBullet = currentBullet.join(' ');
+        bulletPoints.push(completeBullet);
+        console.log('  📝 Saved bullet:', completeBullet.substring(0, 60));
       }
       // Start new bullet
-      currentBullet = [line.replace(/^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/, '').trim()];
+      const bulletText = line.replace(/^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/, '').trim();
+      currentBullet = [bulletText];
+      console.log('  🔵 Starting new bullet:', bulletText.substring(0, 60));
     } else if (currentBullet.length > 0 && currentExperience && !titleCompanyMatch && !dateMatch && !isStandaloneCompany) {
       // Continue multi-line bullet (not a new section header or date)
       currentBullet.push(line);
+      console.log('  ➕ Continuing bullet:', line.substring(0, 60));
     }
   }
   
