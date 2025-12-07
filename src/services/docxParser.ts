@@ -65,20 +65,17 @@ export async function parseDOCXResume(file: File): Promise<ParsedDOCX> {
     
     // Parse the text into structured data
     const sections = parseSections(html, fullText);
-    let workExperiences = parseWorkExperience(fullText);
-    
-    // If no work experiences found or they look malformed, try AI parsing
-    const hasValidExperiences = workExperiences.length > 0 && 
-                                 workExperiences.some(exp => exp.bulletPoints && exp.bulletPoints.length > 0);
-    
-    if (!hasValidExperiences) {
-      console.log('⚠️ Traditional parser found no valid experiences, will try AI parsing later...');
-      // Don't call AI here - will be called when user uploads resume
-    }
-    
+    const workExperiences = parseWorkExperience(fullText);
     const skills = parseSkills(fullText);
     const education = parseEducation(fullText);
     const contactInfo = parseContactInfo(fullText);
+    
+    // Log parsing results
+    console.log(`📊 Parsing Summary:`);
+    console.log(`  Work Experiences: ${workExperiences.length}`);
+    console.log(`  Total Bullets: ${workExperiences.reduce((sum, exp) => sum + (exp.bulletPoints?.length || 0), 0)}`);
+    console.log(`  Skills: ${skills.length}`);
+    console.log(`  Education: ${education.length}`);
     
     return {
       fullText,
@@ -284,7 +281,7 @@ function parseWorkExperience(text: string): WorkExperience[] {
     
     // Bullet detection: actual bullet chars OR lines starting with action verbs (resume bullet points)
     const hasBulletChar = /^[\u2022\u25E6\u2023\u2043•●○■□▪▫-]\s*/.test(line);
-    const startsWithActionVerb = /^(provide|support|develop|manage|lead|maintain|handle|create|implement|design|build|deploy|resolve|administer|enhance|cut|played|supervised|delivered)/i.test(line);
+    const startsWithActionVerb = /^(provide|support|develop|manage|lead|maintain|handle|create|implement|design|build|deploy|resolve|administer|enhance|cut|play|supervise|deliver|achieve|coordinate|establish|execute|facilitate|improve|increase|organize|oversee|perform|plan|prepare|present|process|produce|reduce|research|review|schedule|train|update|upgrade|utilize|write|author|collaborate|contribute|demonstrate|direct|document|drive|educate|enable|ensure|evaluate|expand|generate|identify|initiate|integrate|launch|mentor|monitor|negotiate|optimize|participate|pioneer|prioritize|recommend|redesign|refactor|streamline|strengthen|transform|troubleshoot|validate|visualize)/i.test(line);
     const isBulletStart = hasBulletChar || (currentExperience && startsWithActionVerb);
     
     if (isBulletStart) {
