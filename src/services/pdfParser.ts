@@ -217,21 +217,35 @@ function parseWorkExperience(text: string): WorkExperience[] {
 function parseSkills(text: string): string[] {
   const skills: Set<string> = new Set();
   
-  // Common technical skills to look for
+  // ENHANCED: More comprehensive skills list
   const commonSkills = [
     // Programming languages
-    'JavaScript', 'TypeScript', 'Python', 'Java', 'C++', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Go', 'Rust',
+    'JavaScript', 'TypeScript', 'Python', 'Java', 'C++', 'C#', 'Ruby', 'PHP', 'Swift', 'Kotlin', 'Go', 'Rust', 'Scala', 'Perl', 'R',
     // Web technologies
-    'React', 'Angular', 'Vue', 'Node.js', 'Express', 'HTML', 'CSS', 'SASS', 'Tailwind',
+    'React', 'Angular', 'Vue', 'Node.js', 'Express', 'HTML', 'CSS', 'SASS', 'LESS', 'Tailwind', 'Bootstrap', 'jQuery', 'Next.js', 'Nuxt', 'Gatsby',
+    // Backend frameworks
+    'Django', 'Flask', 'FastAPI', 'Spring', 'Spring Boot', '.NET', 'ASP.NET', 'Laravel', 'Rails', 'Sinatra',
     // Databases
-    'SQL', 'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'DynamoDB',
+    'SQL', 'PostgreSQL', 'MySQL', 'MongoDB', 'Redis', 'DynamoDB', 'Cassandra', 'Oracle', 'SQLite', 'MariaDB', 'Elasticsearch',
     // Cloud & DevOps
-    'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Jenkins', 'CI/CD', 'Git',
-    // Other tools
-    'Figma', 'Photoshop', 'Excel', 'Tableau', 'PowerBI'
+    'AWS', 'Azure', 'GCP', 'Google Cloud', 'Docker', 'Kubernetes', 'Jenkins', 'CI/CD', 'Git', 'GitHub', 'GitLab', 'Terraform', 'Ansible', 'Chef', 'Puppet',
+    // Testing
+    'Jest', 'Mocha', 'Cypress', 'Selenium', 'JUnit', 'PyTest', 'Testing', 'Unit Testing', 'Integration Testing', 'TDD',
+    // Design & Tools
+    'Figma', 'Sketch', 'Adobe XD', 'Photoshop', 'Illustrator', 'InDesign',
+    // Data & Analytics
+    'Excel', 'Tableau', 'PowerBI', 'Power BI', 'Data Analysis', 'Data Visualization', 'Pandas', 'NumPy', 'SciPy',
+    // Methodologies
+    'Agile', 'Scrum', 'Kanban', 'Waterfall', 'DevOps', 'JIRA', 'Confluence',
+    // APIs & Protocols
+    'REST', 'RESTful', 'GraphQL', 'SOAP', 'Microservices', 'API', 'WebSocket',
+    // Soft Skills
+    'Leadership', 'Communication', 'Problem Solving', 'Teamwork', 'Project Management', 'Time Management', 'Critical Thinking'
   ];
   
   const lowerText = text.toLowerCase();
+  
+  console.log('🔍 PDF Parser: Extracting skills from text (length:', text.length, ')');
   
   for (const skill of commonSkills) {
     // Escape special regex characters in skill name
@@ -241,6 +255,8 @@ function parseSkills(text: string): string[] {
       skills.add(skill);
     }
   }
+  
+  console.log('✅ PDF Parser: Found', skills.size, 'skills');
   
   return Array.from(skills);
 }

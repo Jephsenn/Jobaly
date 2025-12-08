@@ -49,10 +49,10 @@ if (window.jobalyLinkedInDetectorLoaded) {
       clearTimeout(captureTimeout);
     }
 
-    console.log('⏳ Setting 1-second timer for job data extraction...');
+    console.log('⏳ Setting 2-second timer for job data extraction...');
     isProcessing = true; // Mark as processing
 
-    // Wait 1 second for dynamic content to load
+    // Wait 2 seconds for dynamic content to load (increased from 1 second)
     captureTimeout = setTimeout(() => {
       console.log('⏰ Timer fired! Attempting to extract job data...');
       const jobData = extractJobData();
@@ -60,6 +60,9 @@ if (window.jobalyLinkedInDetectorLoaded) {
         lastJobId = jobData.id;
         lastCapturedUrl = currentUrl; // Remember this URL
         console.log('✅ Job data extracted successfully');
+        console.log('   Title:', jobData.title);
+        console.log('   Company:', jobData.company);
+        console.log('   Description length:', jobData.description?.length || 0);
         sendJobToBackground(jobData);
       } else if (!jobData) {
         console.log('❌ Failed to extract job data');
@@ -70,7 +73,7 @@ if (window.jobalyLinkedInDetectorLoaded) {
       // Reset processing flag after completion
       isProcessing = false;
       console.log('🏁 Processing complete, isProcessing reset to false');
-    }, 1000);
+    }, 2000);
   }
 
   // Extract job data from LinkedIn page
@@ -106,6 +109,28 @@ if (window.jobalyLinkedInDetectorLoaded) {
       
       console.log('LinkedIn: Found job ID:', jobId);
       
+      // Check if main content containers exist - if not, content hasn't loaded yet
+      const mainContainers = [
+        '.jobs-details',
+        '.job-details',
+        '[class*="jobs-unified-top-card"]',
+        '[class*="job-details-jobs-unified-top-card"]'
+      ];
+      
+      let hasMainContent = false;
+      for (const selector of mainContainers) {
+        if (document.querySelector(selector)) {
+          hasMainContent = true;
+          console.log('LinkedIn: Found main content container:', selector);
+          break;
+        }
+      }
+      
+      if (!hasMainContent) {
+        console.log('⚠️ LinkedIn: Main content not loaded yet, will retry');
+        return null;
+      }
+      
       // Debug: Log all job insight elements to see what LinkedIn provides
       // Try multiple possible selectors for the pill badges
       const insightSelectors = [
@@ -135,19 +160,27 @@ if (window.jobalyLinkedInDetectorLoaded) {
         console.log(`  [${index}]:`, insight.textContent.trim());
       });
       
-      // Job title - multiple possible selectors
+      // Job title - multiple possible selectors with more comprehensive patterns
       const titleSelectors = [
         '.job-details-jobs-unified-top-card__job-title',
         '.jobs-unified-top-card__job-title',
         'h1.t-24',
         '.jobs-details-top-card__job-title',
         'h1[class*="job-title"]',
-        'h2[class*="job-title"]'
+        'h2[class*="job-title"]',
+        '[class*="jobs-unified-top-card"] h1',
+        '[class*="job-details"] h1',
+        '.job-details h1',
+        'h1.jobs-details-top-card__job-title a',
+        // Generic fallbacks
+        'h1[class*="t-"]', // LinkedIn uses utility classes like t-24, t-20
+        'main h1',
+        '[role="main"] h1'
       ];
       let title = null;
       for (const selector of titleSelectors) {
         const elem = document.querySelector(selector);
-        if (elem) {
+        if (elem && elem.textContent.trim().length > 0 && elem.textContent.trim().length < 200) {
           title = elem.textContent.trim();
           console.log('LinkedIn: Found title with selector', selector, ':', title);
           break;
@@ -156,6 +189,10 @@ if (window.jobalyLinkedInDetectorLoaded) {
       
       if (!title) {
         console.log('LinkedIn: No title found, tried selectors:', titleSelectors);
+        console.log('LinkedIn: Available h1 elements:');
+        document.querySelectorAll('h1').forEach(h1 => {
+          console.log('  -', h1.textContent.trim().substring(0, 100), '(classes:', h1.className, ')');
+        });
       }
       
       // Company name
@@ -163,16 +200,26 @@ if (window.jobalyLinkedInDetectorLoaded) {
         '.job-details-jobs-unified-top-card__company-name',
         '.jobs-unified-top-card__company-name',
         '.jobs-details-top-card__company-name a',
-        'a[class*="company-name"]'
+        'a[class*="company-name"]',
+        '[class*="jobs-unified-top-card"] a[href*="/company/"]',
+        '[class*="job-details"] a[href*="/company/"]',
+        '.jobs-company a',
+        // Generic fallbacks
+        '[class*="top-card"] a.ember-view',
+        '.job-details a.ember-view[href*="/company/"]'
       ];
       let company = null;
       for (const selector of companySelectors) {
         const elem = document.querySelector(selector);
-        if (elem) {
+        if (elem && elem.textContent.trim().length > 0) {
           company = elem.textContent.trim();
-          console.log('LinkedIn: Found company:', company);
+          console.log('LinkedIn: Found company with selector', selector, ':', company);
           break;
         }
+      }
+      
+      if (!company) {
+        console.log('LinkedIn: No company found, tried selectors:', companySelectors);
       }
       
       // Location
@@ -194,12 +241,20 @@ if (window.jobalyLinkedInDetectorLoaded) {
       const descriptionSelectors = [
         '.jobs-description-content__text',
         '.jobs-description__content',
-        '#job-details'
+        '#job-details',
+        '[class*="jobs-description"]',
+        '.jobs-box__html-content',
+        '[class*="job-details"] article',
+        'article.jobs-description',
+        // Look for content in iframes (LinkedIn sometimes uses these)
+        'iframe[title*="description"]',
+        // Generic fallback
+        '[class*="description-content"]'
       ];
       let description = null;
       for (const selector of descriptionSelectors) {
         const elem = document.querySelector(selector);
-        if (elem) {
+        if (elem && elem.textContent.trim().length > 50) {
           // Use innerText instead of textContent to preserve line breaks
           description = elem.innerText.trim();
           
@@ -214,8 +269,13 @@ if (window.jobalyLinkedInDetectorLoaded) {
                 .join('\n\n');
             }
           }
+          console.log('LinkedIn: Found description with selector', selector, '(length:', description.length, ')');
           break;
         }
+      }
+      
+      if (!description) {
+        console.log('LinkedIn: No description found, tried selectors:', descriptionSelectors);
       }
       
       // Salary (if available) - Check all insight elements we found
@@ -466,6 +526,17 @@ if (window.jobalyLinkedInDetectorLoaded) {
         }
       }
 
+      // Validate extracted data quality
+      const hasGoodData = title && title !== `LinkedIn Job ${jobId}` && company && description && description.length > 100;
+      
+      if (!hasGoodData) {
+        console.warn('⚠️ LinkedIn: Extracted data quality is poor:');
+        console.warn('  - Title:', title ? '✓' : '✗');
+        console.warn('  - Company:', company ? '✓' : '✗');
+        console.warn('  - Description:', description ? (description.length > 100 ? '✓' : `Too short (${description.length} chars)`) : '✗');
+        console.warn('  This may result in inaccurate match scores.');
+      }
+      
       return {
         id: jobId,
         url: window.location.href,
@@ -485,7 +556,9 @@ if (window.jobalyLinkedInDetectorLoaded) {
         educationLevel: educationLevel || null,
         skills: skills.length > 0 ? skills : null,
         benefits: benefits.length > 0 ? benefits : null,
-        detectedAt: new Date().toISOString()
+        detectedAt: new Date().toISOString(),
+        // Add data quality flag
+        dataQuality: hasGoodData ? 'good' : 'poor'
       };
       
     } catch (error) {

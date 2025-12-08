@@ -690,9 +690,21 @@ const JobCard: React.FC<JobCardProps> = ({ job, matchScore, showBreakdown, onTog
             )}
           </div>
           
-          <h3 className="text-lg font-semibold text-gray-900 mb-1">
-            {displayTitle}
-          </h3>
+          <div className="flex items-start gap-2">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1 flex-1">
+              {displayTitle}
+            </h3>
+            {/* Data quality warning for incomplete scraping */}
+            {(displayTitle.includes('LinkedIn Job') || displayTitle.includes('Indeed Job') || 
+              !job.description || job.description.length < 100) && (
+              <span 
+                className="text-xs px-2 py-1 bg-yellow-50 text-yellow-700 border border-yellow-200 rounded-md"
+                title="Job data may be incomplete. This can affect match score accuracy."
+              >
+                ⚠️ Limited Info
+              </span>
+            )}
+          </div>
           
           {companyName && companyName !== 'Unknown Company' && (
             <p className="text-gray-600 mb-2">{companyName}</p>

@@ -128,16 +128,32 @@ function calculateSkillsMatch(resume: Resume, job: Job): {
     });
   }
   
-  // Extract skills from full text as fallback
+  // ENHANCED: Extract more skills from full text as fallback
   if (resume.full_text) {
-    const commonSkills = ['JavaScript', 'TypeScript', 'Python', 'Java', 'React', 'Node.js', 
-                         'AWS', 'Docker', 'SQL', 'Git', 'Agile', 'Leadership'];
-    commonSkills.forEach(skill => {
+    const expandedSkills = [
+      // Programming Languages
+      'JavaScript', 'TypeScript', 'Python', 'Java', 'C\\+\\+', 'C#', 'Ruby', 'Go', 'Rust', 'Swift', 'Kotlin', 'PHP',
+      // Frontend
+      'React', 'Angular', 'Vue', 'HTML', 'CSS', 'Sass', 'LESS', 'jQuery', 'Bootstrap', 'Tailwind',
+      // Backend
+      'Node\\.js', 'Django', 'Flask', 'Spring', 'Express', 'FastAPI', '\\.NET', 'ASP\\.NET',
+      // Databases
+      'SQL', 'MySQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Oracle', 'Cassandra', 'DynamoDB',
+      // Cloud & DevOps
+      'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Jenkins', 'GitLab', 'CI/CD', 'Terraform',
+      // Tools & Methodologies
+      'Git', 'GitHub', 'Agile', 'Scrum', 'JIRA', 'REST', 'GraphQL', 'Microservices',
+      // Soft Skills
+      'Leadership', 'Communication', 'Problem Solving', 'Teamwork', 'Project Management'
+    ];
+    expandedSkills.forEach(skill => {
       if (new RegExp(`\\b${skill}\\b`, 'i').test(resume.full_text)) {
-        resumeSkills.add(skill.toLowerCase());
+        resumeSkills.add(skill.replace(/\\\\/g, '').toLowerCase());
       }
     });
   }
+  
+  console.log('📊 Resume skills extracted:', Array.from(resumeSkills).slice(0, 10).join(', '), '...');
   
   // Extract required skills from job
   const requiredSkills = new Set<string>();
@@ -155,21 +171,32 @@ function calculateSkillsMatch(resume: Resume, job: Job): {
     });
   }
   
-  // Also extract from description
-  if (job.description) {
-    const commonSkills = ['JavaScript', 'TypeScript', 'Python', 'Java', 'React', 'Node.js', 
-                         'AWS', 'Docker', 'SQL', 'Git', 'Agile', 'Leadership'];
-    commonSkills.forEach(skill => {
+  // ENHANCED: Extract more skills from description with better patterns
+  if (job.description && job.description.length > 100) {
+    const expandedSkills = [
+      'JavaScript', 'TypeScript', 'Python', 'Java', 'C\\+\\+', 'C#', 'Ruby', 'Go', 'Rust', 'Swift', 'Kotlin', 'PHP',
+      'React', 'Angular', 'Vue', 'HTML', 'CSS', 'Sass', 'jQuery', 'Bootstrap', 'Tailwind',
+      'Node\\.js', 'Django', 'Flask', 'Spring', 'Express', 'FastAPI', '\\.NET', 'ASP\\.NET',
+      'SQL', 'MySQL', 'PostgreSQL', 'MongoDB', 'Redis', 'Oracle', 'Cassandra', 'DynamoDB',
+      'AWS', 'Azure', 'GCP', 'Docker', 'Kubernetes', 'Jenkins', 'GitLab', 'CI/CD', 'Terraform',
+      'Git', 'GitHub', 'Agile', 'Scrum', 'JIRA', 'REST', 'GraphQL', 'Microservices',
+      'Leadership', 'Communication', 'Problem Solving', 'Teamwork', 'Project Management'
+    ];
+    expandedSkills.forEach(skill => {
       if (new RegExp(`\\b${skill}\\b`, 'i').test(job.description)) {
-        preferredSkills.add(skill.toLowerCase());
+        preferredSkills.add(skill.replace(/\\\\/g, '').toLowerCase());
       }
     });
   }
   
   const allJobSkills = new Set([...requiredSkills, ...preferredSkills]);
   
+  console.log('📊 Job skills required:', Array.from(allJobSkills).slice(0, 10).join(', '), '...');
+  
+  // IMPROVED: If no skills can be extracted from job, return higher neutral score
   if (allJobSkills.size === 0) {
-    return { score: 50, matched: [], missing: [] }; // Neutral score if no skills listed
+    console.log('⚠️ No skills extracted from job - returning neutral score');
+    return { score: 70, matched: [], missing: [] }; // Higher neutral score (was 50)
   }
   
   // Calculate matches
@@ -192,6 +219,8 @@ function calculateSkillsMatch(resume: Resume, job: Job): {
       missing.push(jobSkill);
     }
   });
+  
+  console.log('✅ Skills matched:', matched.length, '/', allJobSkills.size);
   
   // Calculate score: required skills weighted higher
   const requiredMatched = matched.filter(s => requiredSkills.has(s)).length;
@@ -255,6 +284,13 @@ function calculateTitleMatch(
   const resumeTitle = (resume.current_title || '').toLowerCase();
   const jobTitle = job.title.toLowerCase();
   
+  // IMPROVED: Detect generic/placeholder titles from failed scraping
+  const isGenericTitle = /^(linkedin|indeed|glassdoor|job)\s+(job|posting)\s+\d+$/i.test(job.title);
+  if (isGenericTitle) {
+    console.log('⚠️ Generic job title detected:', job.title, '- returning neutral score');
+    return { score: 60, similarity: 'Job title not available' };
+  }
+  
   // Check against desired job titles first
   if (desiredTitles.length > 0) {
     for (const desired of desiredTitles) {
@@ -266,7 +302,7 @@ function calculateTitleMatch(
   }
   
   // Check if current title matches job title
-  if (resumeTitle && jobTitle) {
+  if (resumeTitle && jobTitle && jobTitle.length > 3) {
     const titleWords = new Set(resumeTitle.split(/\s+/).filter(w => w.length > 2));
     const jobWords = new Set(jobTitle.split(/\s+/).filter(w => w.length > 2));
     
@@ -278,8 +314,12 @@ function calculateTitleMatch(
       }
     });
     
-    // Check for semantic similarity (e.g., "engineer" and "specialist" in same domain)
-    const domainWords = ['help', 'desk', 'support', 'technical', 'system', 'network', 'software', 'web', 'data', 'cloud'];
+    // ENHANCED: Check for semantic similarity with more domain words
+    const domainWords = [
+      'help', 'desk', 'support', 'technical', 'system', 'network', 'software', 'web', 'data', 
+      'cloud', 'engineer', 'developer', 'designer', 'manager', 'analyst', 'specialist',
+      'coordinator', 'administrator', 'consultant', 'architect'
+    ];
     let domainMatches = 0;
     domainWords.forEach(domain => {
       if (resumeTitle.includes(domain) && jobTitle.includes(domain)) {
@@ -290,6 +330,11 @@ function calculateTitleMatch(
     // If 2+ domain words match (e.g., "help desk"), consider it a strong match even if role differs
     if (domainMatches >= 2) {
       return { score: 85, similarity: 'Same domain, similar role' };
+    }
+    
+    // If 1 domain word matches, moderate score
+    if (domainMatches === 1) {
+      return { score: 70, similarity: 'Related field' };
     }
     
     const totalUniqueWords = new Set([...titleWords, ...jobWords]).size;
@@ -318,7 +363,8 @@ function calculateTitleMatch(
     return { score: 60, similarity: 'Same seniority level' };
   }
   
-  return { score: 30, similarity: 'Different role' };
+  // IMPROVED: Better default for no match
+  return { score: 40, similarity: 'Different role' }; // Increased from 30
 }
 
 /**
@@ -329,8 +375,15 @@ function calculateKeywordsMatch(resume: Resume, job: Job): {
   matches: number;
   total: number;
 } {
+  // IMPROVED: Return higher neutral score if no description or very short description
   if (!job.description) {
-    return { score: 50, matches: 0, total: 0 }; // Neutral if no description
+    console.log('⚠️ No job description - returning neutral keyword score');
+    return { score: 70, matches: 0, total: 0 }; // Higher neutral (was 50)
+  }
+  
+  if (job.description.length < 100) {
+    console.log('⚠️ Job description too short (<100 chars) - returning neutral keyword score');
+    return { score: 70, matches: 0, total: 0 }; // Higher neutral for short descriptions
   }
   
   const resumeText = resume.full_text.toLowerCase();
@@ -339,8 +392,11 @@ function calculateKeywordsMatch(resume: Resume, job: Job): {
   // Extract important keywords from job description (nouns, tech terms)
   const keywords = extractKeywords(jobDescription);
   
+  console.log('📊 Keywords extracted from job:', keywords.length);
+  
   if (keywords.length === 0) {
-    return { score: 50, matches: 0, total: 0 };
+    console.log('⚠️ No keywords extracted - returning neutral score');
+    return { score: 70, matches: 0, total: 0 }; // Higher neutral (was 50)
   }
   
   // Count matches
@@ -350,6 +406,8 @@ function calculateKeywordsMatch(resume: Resume, job: Job): {
       matches++;
     }
   });
+  
+  console.log('✅ Keywords matched:', matches, '/', keywords.length);
   
   const score = (matches / keywords.length) * 100;
   
