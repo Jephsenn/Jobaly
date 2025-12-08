@@ -19,26 +19,35 @@ if (window.jobalyLinkedInDetectorLoaded) {
   let lastCapturedUrl = null; // Track last URL we captured from
   let isProcessing = false; // Prevent concurrent processing
   let captureCount = 0; // Track how many jobs we've captured
+  let retryCount = 0; // Track retry attempts
+  const MAX_RETRIES = 3; // Maximum number of retries
 
-  // Wait for page to fully load
-  function waitForJobData() {
+  // Wait for page to fully load with retry logic
+  function waitForJobData(isRetry = false) {
     const currentUrl = window.location.href;
     const caller = new Error().stack.split('\n')[2].trim(); // Get caller info
     
-    console.log('🔔 waitForJobData() called');
+    if (!isRetry) {
+      // Reset retry count for new URLs
+      retryCount = 0;
+      console.log('🔔 waitForJobData() called (fresh)');
+    } else {
+      console.log(`🔁 waitForJobData() retry #${retryCount}`);
+    }
+    
     console.log('   URL:', currentUrl);
     console.log('   Called from:', caller);
     console.log('   lastCapturedUrl:', lastCapturedUrl);
     console.log('   isProcessing:', isProcessing);
     
     // Check if we've already captured from this exact URL
-    if (lastCapturedUrl === currentUrl) {
+    if (lastCapturedUrl === currentUrl && !isRetry) {
       console.log('⏭️ SKIP: Already captured job from this URL');
       return;
     }
 
-    // Check if we're already processing this URL
-    if (isProcessing) {
+    // Check if we're already processing this URL (but allow retries)
+    if (isProcessing && !isRetry) {
       console.log('⏭️ SKIP: Already processing, skipping duplicate trigger');
       return;
     }
@@ -49,31 +58,46 @@ if (window.jobalyLinkedInDetectorLoaded) {
       clearTimeout(captureTimeout);
     }
 
-    console.log('⏳ Setting 2-second timer for job data extraction...');
-    isProcessing = true; // Mark as processing
+    if (!isRetry) {
+      console.log('⏳ Setting 3-second timer for job data extraction...');
+      isProcessing = true; // Mark as processing
+    }
 
-    // Wait 2 seconds for dynamic content to load (increased from 1 second)
+    // Wait 3 seconds for dynamic content to load (increased from 2 seconds)
+    const waitTime = isRetry ? 2000 : 3000; // First attempt: 3s, retries: 2s
     captureTimeout = setTimeout(() => {
       console.log('⏰ Timer fired! Attempting to extract job data...');
       const jobData = extractJobData();
+      
       if (jobData && jobData.id !== lastJobId) {
         lastJobId = jobData.id;
         lastCapturedUrl = currentUrl; // Remember this URL
+        retryCount = 0; // Reset retry count on success
         console.log('✅ Job data extracted successfully');
         console.log('   Title:', jobData.title);
         console.log('   Company:', jobData.company);
         console.log('   Description length:', jobData.description?.length || 0);
         sendJobToBackground(jobData);
+        isProcessing = false;
       } else if (!jobData) {
-        console.log('❌ Failed to extract job data');
+        // Content not loaded yet - retry if we haven't exceeded max retries
+        if (retryCount < MAX_RETRIES) {
+          retryCount++;
+          console.log(`🔄 Content not ready, retrying (${retryCount}/${MAX_RETRIES})...`);
+          waitForJobData(true); // Retry
+          return; // Don't reset isProcessing yet
+        } else {
+          console.log(`❌ Failed to extract job data after ${MAX_RETRIES} retries`);
+          retryCount = 0;
+          isProcessing = false;
+        }
       } else {
         console.log('⏭️ Job already captured (ID match):', jobData.id);
+        isProcessing = false;
       }
       
-      // Reset processing flag after completion
-      isProcessing = false;
       console.log('🏁 Processing complete, isProcessing reset to false');
-    }, 2000);
+    }, waitTime);
   }
 
   // Extract job data from LinkedIn page
