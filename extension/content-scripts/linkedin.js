@@ -20,7 +20,7 @@ if (window.jobalyLinkedInDetectorLoaded) {
   let isProcessing = false; // Prevent concurrent processing
   let captureCount = 0; // Track how many jobs we've captured
   let retryCount = 0; // Track retry attempts
-  const MAX_RETRIES = 3; // Maximum number of retries
+  const MAX_RETRIES = 5; // Maximum number of retries (increased from 3)
 
   // Wait for page to fully load with retry logic
   function waitForJobData(isRetry = false) {
@@ -59,12 +59,12 @@ if (window.jobalyLinkedInDetectorLoaded) {
     }
 
     if (!isRetry) {
-      console.log('⏳ Setting 3-second timer for job data extraction...');
+      console.log('⏳ Setting 4-second timer for job data extraction...');
       isProcessing = true; // Mark as processing
     }
 
-    // Wait 3 seconds for dynamic content to load (increased from 2 seconds)
-    const waitTime = isRetry ? 2000 : 3000; // First attempt: 3s, retries: 2s
+    // Wait longer for LinkedIn's slow dynamic content loading
+    const waitTime = isRetry ? 3000 : 4000; // First attempt: 4s, retries: 3s each
     captureTimeout = setTimeout(() => {
       console.log('⏰ Timer fired! Attempting to extract job data...');
       const jobData = extractJobData();
@@ -138,13 +138,18 @@ if (window.jobalyLinkedInDetectorLoaded) {
         '.jobs-details',
         '.job-details',
         '[class*="jobs-unified-top-card"]',
-        '[class*="job-details-jobs-unified-top-card"]'
+        '[class*="job-details-jobs-unified-top-card"]',
+        'main',
+        '[role="main"]'
       ];
       
       let hasMainContent = false;
+      let foundContainer = null;
       for (const selector of mainContainers) {
-        if (document.querySelector(selector)) {
+        const elem = document.querySelector(selector);
+        if (elem) {
           hasMainContent = true;
+          foundContainer = selector;
           console.log('LinkedIn: Found main content container:', selector);
           break;
         }
@@ -152,6 +157,11 @@ if (window.jobalyLinkedInDetectorLoaded) {
       
       if (!hasMainContent) {
         console.log('⚠️ LinkedIn: Main content not loaded yet, will retry');
+        console.log('   Available elements on page:');
+        console.log('   - main tags:', document.querySelectorAll('main').length);
+        console.log('   - role=main:', document.querySelectorAll('[role="main"]').length);
+        console.log('   - h1 tags:', document.querySelectorAll('h1').length);
+        console.log('   - classes with "job":', document.querySelectorAll('[class*="job"]').length);
         return null;
       }
       
@@ -212,11 +222,21 @@ if (window.jobalyLinkedInDetectorLoaded) {
       }
       
       if (!title) {
-        console.log('LinkedIn: No title found, tried selectors:', titleSelectors);
-        console.log('LinkedIn: Available h1 elements:');
-        document.querySelectorAll('h1').forEach(h1 => {
-          console.log('  -', h1.textContent.trim().substring(0, 100), '(classes:', h1.className, ')');
-        });
+        console.log('LinkedIn: No title found with specific selectors, trying generic h1 fallback');
+        const allH1s = document.querySelectorAll('h1');
+        console.log('LinkedIn: Found', allH1s.length, 'h1 elements:');
+        
+        // Try to find the best h1 candidate
+        for (const h1 of allH1s) {
+          const text = h1.textContent.trim();
+          console.log('  - h1:', text.substring(0, 100), '(classes:', h1.className, ')');
+          
+          // Use the first h1 that looks like a job title (not too short, not too long)
+          if (!title && text.length > 5 && text.length < 200 && !text.includes('LinkedIn')) {
+            title = text;
+            console.log('LinkedIn: Using h1 as title fallback:', title);
+          }
+        }
       }
       
       // Company name
@@ -243,7 +263,18 @@ if (window.jobalyLinkedInDetectorLoaded) {
       }
       
       if (!company) {
-        console.log('LinkedIn: No company found, tried selectors:', companySelectors);
+        console.log('LinkedIn: No company found with specific selectors, trying generic fallback');
+        // Try to find any link to a company page
+        const companyLinks = document.querySelectorAll('a[href*="/company/"]');
+        console.log('LinkedIn: Found', companyLinks.length, 'company links');
+        for (const link of companyLinks) {
+          const text = link.textContent.trim();
+          if (text.length > 0 && text.length < 100) {
+            company = text;
+            console.log('LinkedIn: Using company link as fallback:', company);
+            break;
+          }
+        }
       }
       
       // Location
@@ -299,7 +330,18 @@ if (window.jobalyLinkedInDetectorLoaded) {
       }
       
       if (!description) {
-        console.log('LinkedIn: No description found, tried selectors:', descriptionSelectors);
+        console.log('LinkedIn: No description found with specific selectors, trying generic fallback');
+        // Try to find any large text block that could be a description
+        const articles = document.querySelectorAll('article, [role="article"], div[class*="description"]');
+        console.log('LinkedIn: Found', articles.length, 'potential description containers');
+        for (const article of articles) {
+          const text = article.innerText?.trim() || article.textContent?.trim();
+          if (text && text.length > 100) {
+            description = text;
+            console.log('LinkedIn: Using article/div as description fallback (length:', description.length, ')');
+            break;
+          }
+        }
       }
       
       // Salary (if available) - Check all insight elements we found
@@ -551,14 +593,21 @@ if (window.jobalyLinkedInDetectorLoaded) {
       }
 
       // Validate extracted data quality
+      // At minimum we need job ID and title (even if it's the generic fallback)
+      const hasMinimumData = jobId && title;
       const hasGoodData = title && title !== `LinkedIn Job ${jobId}` && company && description && description.length > 100;
       
+      if (!hasMinimumData) {
+        console.error('❌ LinkedIn: Failed to extract minimum required data (job ID and title)');
+        return null; // Don't return anything if we don't even have basic info
+      }
+      
       if (!hasGoodData) {
-        console.warn('⚠️ LinkedIn: Extracted data quality is poor:');
-        console.warn('  - Title:', title ? '✓' : '✗');
-        console.warn('  - Company:', company ? '✓' : '✗');
-        console.warn('  - Description:', description ? (description.length > 100 ? '✓' : `Too short (${description.length} chars)`) : '✗');
-        console.warn('  This may result in inaccurate match scores.');
+        console.warn('⚠️ LinkedIn: Extracted data quality is limited:');
+        console.warn('  - Title:', title ? (title.includes('LinkedIn Job') ? '⚠️ Generic' : '✓') : '✗');
+        console.warn('  - Company:', company ? '✓' : '✗ Missing');
+        console.warn('  - Description:', description ? (description.length > 100 ? '✓' : `⚠️ Too short (${description.length} chars)`) : '✗ Missing');
+        console.warn('  Job will be captured but match scores may be less accurate.');
       }
       
       return {
